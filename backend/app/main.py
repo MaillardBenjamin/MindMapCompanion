@@ -1,0 +1,137 @@
+import logging
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import OperationalError, ProgrammingError
+from app.api.routes import auth, users, mindmaps, nodes, triggers, actions
+from app.routers import agents
+from app.routers import configurable_agents
+from app.routers import admin
+from app.routers import history
+from app.routers import settings as settings_router
+from app.mcp.web_search_server import router as web_search_mcp_router
+from app.config import settings
+from app.services.scheduler import start_scheduler
+
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Désactiver les logs d'accès HTTP d'uvicorn
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+app = FastAPI(
+    title="Personal Assistant API",
+    description="API REST avec authentification JWT pour Personal Assistant",
+    version="1.0.0"
+)
+
+# Configuration CORS depuis les variables d'environnement
+# Le field_validator dans Settings.parse_cors_origins convertit déjà la string en liste
+cors_origins = settings.CORS_ORIGINS if isinstance(settings.CORS_ORIGINS, list) else [str(settings.CORS_ORIGINS)]
+cors_methods = settings.CORS_ALLOW_METHODS if isinstance(settings.CORS_ALLOW_METHODS, list) else ["*"]
+cors_headers = settings.CORS_ALLOW_HEADERS if isinstance(settings.CORS_ALLOW_HEADERS, list) else ["*"]
+
+logger.info(f"🌐 Configuration CORS - Origines autorisées: {cors_origins}")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+    allow_methods=cors_methods,
+    allow_headers=cors_headers,
+)
+
+# Gestionnaire d'exception global pour s'assurer que les en-têtes CORS sont toujours envoyés
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Gestionnaire d'exception global qui garantit l'envoi des en-têtes CORS"""
+    logger.error(f"❌ Erreur non gérée: {exc}", exc_info=True)
+    
+    # Déterminer l'origine autorisée
+    origin = request.headers.get("origin")
+    allowed_origin = origin if origin in cors_origins else cors_origins[0] if cors_origins else "*"
+    
+    # Vérifier si c'est une erreur de base de données (colonne manquante)
+    if isinstance(exc, (OperationalError, ProgrammingError)):
+        error_msg = str(exc)
+        if "input_schema" in error_msg or "column" in error_msg.lower() or "does not exist" in error_msg.lower():
+            logger.error("⚠️ Colonne manquante en base de données. Exécutez la migration: alembic upgrade head")
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "detail": "Erreur de base de données. La colonne 'input_schema' est peut-être manquante. Exécutez: alembic upgrade head"
+                },
+                headers={
+                    "Access-Control-Allow-Origin": allowed_origin,
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": ",".join(cors_methods) if isinstance(cors_methods, list) else "*",
+                    "Access-Control-Allow-Headers": ",".join(cors_headers) if isinstance(cors_headers, list) else "*",
+                }
+            )
+    
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": f"Erreur interne du serveur: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": allowed_origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": ",".join(cors_methods) if isinstance(cors_methods, list) else "*",
+            "Access-Control-Allow-Headers": ",".join(cors_headers) if isinstance(cors_headers, list) else "*",
+        }
+    )
+
+# Inclusion des routes
+app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(mindmaps.router)
+app.include_router(nodes.router)
+app.include_router(triggers.router)
+app.include_router(actions.router)
+app.include_router(agents.router, prefix="/api")
+app.include_router(configurable_agents.router, prefix="/api")
+app.include_router(admin.router)
+app.include_router(history.router)
+app.include_router(settings_router.router)
+app.include_router(web_search_mcp_router, prefix="/api")
+
+
+@app.get("/")
+def root():
+    """Point d'entrée de l'API"""
+    return {"message": "Personal Assistant API", "version": "1.0.0"}
+
+
+@app.get("/health")
+def health_check():
+    """Vérification de l'état de l'API"""
+    return {"status": "healthy"}
+
+
+@app.get("/api/test-cors")
+def test_cors():
+    """Endpoint de test pour vérifier que CORS fonctionne"""
+    return {"message": "CORS is working", "cors_origins": cors_origins}
+
+
+# Démarrer le scheduler au démarrage de l'application
+@app.on_event("startup")
+async def startup_event():
+    """Démarre le scheduler au démarrage de l'application"""
+    logger.info("🚀 Démarrage du scheduler...")
+    scheduler = start_scheduler()
+    app.state.scheduler = scheduler
+    logger.info("✅ Scheduler démarré avec succès")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Arrête le scheduler à l'arrêt de l'application"""
+    if hasattr(app.state, "scheduler"):
+        logger.info("🛑 Arrêt du scheduler...")
+        app.state.scheduler.shutdown()
+        logger.info("✅ Scheduler arrêté")

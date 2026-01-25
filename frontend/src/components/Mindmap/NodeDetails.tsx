@@ -1,0 +1,1378 @@
+import { useState, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import {
+  Box,
+  Typography,
+  TextField,
+  Button,
+  IconButton,
+  Chip,
+  Divider,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  Switch,
+  FormControlLabel,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  RadioGroup,
+  Radio,
+  FormLabel,
+  CircularProgress,
+  Alert,
+} from '@mui/material';
+import {
+  Close as CloseIcon,
+  Add as AddIcon,
+  Delete as DeleteIcon,
+  Schedule as ScheduleIcon,
+  Webhook as WebhookIcon,
+  Rule as ConditionIcon,
+  TouchApp as ManualIcon,
+  Save as SaveIcon,
+  AddCircle as AddCircleIcon,
+  PlayArrow as PlayIcon,
+  ScreenLockPortrait as ScreenIcon,
+  Email as EmailIcon,
+} from '@mui/icons-material';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useMindmapStore } from '../../stores/mindmapStore';
+import { useNotification } from '../../hooks/useNotification';
+import { 
+  triggersApi, 
+  configurableAgentsApi, 
+  actionsApi,
+  type TriggerCreate,
+  type ConfigurableAgentResponse,
+  type ActionResponse,
+  type TriggerManualExecuteRequest,
+  type TriggerManualExecuteResponse,
+} from '../../services/api';
+import TriggerForm from '../Trigger/TriggerForm';
+import { STATUS_ORDER, getStatusColor, getStatusLabel } from '../../utils/nodeStatus';
+import type { NodeStatus } from '../../../../shared/types';
+
+// Mapping des anciens types vers les nouveaux types
+const oldToNewTriggerType: Record<string, string> = {
+  'schedule': 'cron',
+  'webhook': 'email_received',
+  'condition': 'state_changed',
+  'manual': 'manual',
+};
+
+// Mapping inverse pour l'affichage
+const newToOldTriggerType: Record<string, string> = {
+  'cron': 'schedule',
+  'email_received': 'webhook',
+  'state_changed': 'condition',
+  'date_reached': 'schedule',
+  'manual': 'manual',
+};
+
+// Fonction helper pour obtenir le type d'affichage
+const getDisplayType = (triggerType: string): string => {
+  return newToOldTriggerType[triggerType] || triggerType;
+};
+
+const triggerIcons: Record<string, JSX.Element> = {
+  schedule: <ScheduleIcon fontSize="small" />,
+  webhook: <WebhookIcon fontSize="small" />,
+  condition: <ConditionIcon fontSize="small" />,
+  manual: <ManualIcon fontSize="small" />,
+  cron: <ScheduleIcon fontSize="small" />,
+  email_received: <WebhookIcon fontSize="small" />,
+  state_changed: <ConditionIcon fontSize="small" />,
+  date_reached: <ScheduleIcon fontSize="small" />,
+};
+
+const triggerLabels: Record<string, string> = {
+  schedule: 'Planifié',
+  webhook: 'Webhook',
+  condition: 'Condition',
+  manual: 'Manuel',
+  cron: 'Planifié',
+  email_received: 'Email reçu',
+  state_changed: 'Changement d\'état',
+  date_reached: 'Date atteinte',
+};
+
+const triggerColors: Record<string, string> = {
+  schedule: '#FBBF24',
+  webhook: '#4ADE80',
+  condition: '#8B5CF6',
+  manual: '#FF6B9D',
+  cron: '#FBBF24',
+  email_received: '#4ADE80',
+  state_changed: '#8B5CF6',
+  date_reached: '#FBBF24',
+};
+
+const NodeDetails = () => {
+  const { selectedNode, setSelectedNode, updateNode, addTrigger, removeTrigger, deleteNode, addChildNode, isSaving, currentMindmap, loadNodes } = useMindmapStore();
+  const { showSuccess, showError, showWarning } = useNotification();
+  const [editLabel, setEditLabel] = useState(selectedNode?.data.label || '');
+  const [editDescription, setEditDescription] = useState(selectedNode?.data.description || '');
+  const [editStatus, setEditStatus] = useState<NodeStatus>(selectedNode?.data.status || 'inbox');
+  const [showAddTrigger, setShowAddTrigger] = useState(false);
+  const [showAddChildNode, setShowAddChildNode] = useState(false);
+  const [newChildNodeLabel, setNewChildNodeLabel] = useState('');
+  const [editingTrigger, setEditingTrigger] = useState<any>(null);
+  const [triggerFormOpen, setTriggerFormOpen] = useState(false);
+  
+  // États pour le lancement manuel de trigger
+  const [showManualExecute, setShowManualExecute] = useState(false);
+  const [selectedTriggerForExecute, setSelectedTriggerForExecute] = useState<any>(null);
+  const [taskType, setTaskType] = useState<'agent' | 'action'>('agent');
+  const [selectedAgent, setSelectedAgent] = useState<string>('');
+  const [selectedAction, setSelectedAction] = useState<string>('');
+  const [outputType, setOutputType] = useState<'screen' | 'email'>('screen');
+  const [inputText, setInputText] = useState('');
+  const [emailTo, setEmailTo] = useState('');
+  const [emailSubject, setEmailSubject] = useState('');
+  const [availableAgents, setAvailableAgents] = useState<ConfigurableAgentResponse[]>([]);
+  const [availableActions, setAvailableActions] = useState<ActionResponse[]>([]);
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executeResult, setExecuteResult] = useState<any>(null);
+  const [executeError, setExecuteError] = useState<string>('');
+
+  // Synchroniser editLabel, editDescription et editStatus avec selectedNode quand il change
+  useEffect(() => {
+    if (selectedNode) {
+      setEditLabel(selectedNode.data.label || '');
+      setEditDescription(selectedNode.data.description || '');
+      setEditStatus(selectedNode.data.status || 'inbox');
+    }
+  }, [selectedNode?.id, selectedNode?.data.label, selectedNode?.data.description, selectedNode?.data.status]);
+
+  // Ne pas rendre AnimatePresence si aucun nœud n'est sélectionné
+  if (!selectedNode) {
+    return null;
+  }
+
+  const handleSave = async () => {
+    console.log('Saving node:', selectedNode.id, { label: editLabel, description: editDescription, status: editStatus });
+    try {
+      await updateNode(selectedNode.id, {
+        label: editLabel,
+        description: editDescription,
+        status: editStatus,
+      });
+      showSuccess("Nœud mis à jour avec succès");
+    } catch (error) {
+      console.error("Erreur lors de la sauvegarde:", error);
+      showError("Erreur lors de la mise à jour du nœud");
+    }
+  };
+
+
+  const handleDelete = async () => {
+    if (!selectedNode) return;
+    const nodeIdToDelete = selectedNode.id;
+    console.log('Deleting node:', nodeIdToDelete);
+    
+    // Désélectionner le nœud avant la suppression pour fermer le panneau
+    setSelectedNode(null);
+    
+    // Attendre un peu pour que le panneau se ferme
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Supprimer le nœud
+    try {
+      await deleteNode(nodeIdToDelete);
+      showSuccess("Nœud supprimé avec succès");
+    } catch (error) {
+      console.error("Erreur lors de la suppression:", error);
+      showError("Erreur lors de la suppression du nœud");
+    }
+  };
+
+  const handleAddChildNodeClick = () => {
+    console.log(`[NodeDetails] 🖱️ [${new Date().toISOString()}] handleAddChildNodeClick - selectedNode: ${selectedNode?.id}, label: ${selectedNode?.data.label}`);
+    setNewChildNodeLabel('');
+    setShowAddChildNode(true);
+    console.log(`[NodeDetails] ✅ [${new Date().toISOString()}] Dialogue ouvert pour ajout de sous-nœud`);
+  };
+
+  const handleAddChildNodeConfirm = async () => {
+    const startTime = Date.now();
+    console.log(`[NodeDetails] 🖱️ [${new Date().toISOString()}] handleAddChildNodeConfirm DÉBUT`);
+    console.log(`[NodeDetails] État - selectedNode: ${selectedNode?.id}, label input: "${newChildNodeLabel}", isSaving: ${isSaving}`);
+    
+    if (!selectedNode) {
+      console.error(`[NodeDetails] ❌ [${new Date().toISOString()}] Aucun nœud sélectionné`);
+      return;
+    }
+    
+    const label = newChildNodeLabel.trim() || `Sous-nœud de ${selectedNode.data.label}`;
+    console.log(`[NodeDetails] 📝 [${new Date().toISOString()}] Label final: "${label}"`);
+    console.log(`[NodeDetails] 🔄 [${new Date().toISOString()}] Appel de addChildNode(${selectedNode.id}, "${label}")...`);
+    
+    try {
+      await addChildNode(selectedNode.id, label);
+      console.log(`[NodeDetails] ✅ [${new Date().toISOString()}] addChildNode terminé (temps: ${Date.now() - startTime}ms)`);
+      showSuccess("Sous-nœud créé avec succès");
+    } catch (error) {
+      console.error(`[NodeDetails] ❌ [${new Date().toISOString()}] Erreur dans addChildNode:`, error);
+      console.error(`[NodeDetails] Stack trace:`, error instanceof Error ? error.stack : 'N/A');
+      showError("Erreur lors de la création du sous-nœud");
+    }
+    
+    console.log(`[NodeDetails] 🔄 [${new Date().toISOString()}] Fermeture du dialogue...`);
+    setShowAddChildNode(false);
+    setNewChildNodeLabel('');
+    console.log(`[NodeDetails] ✅ [${new Date().toISOString()}] handleAddChildNodeConfirm FIN (temps total: ${Date.now() - startTime}ms)`);
+  };
+
+  const handleAddChildNodeCancel = () => {
+    setShowAddChildNode(false);
+    setNewChildNodeLabel('');
+  };
+
+  // Charger les agents configurables et actions quand le dialogue s'ouvre
+  useEffect(() => {
+    if (showManualExecute) {
+      loadAvailableAgents();
+      loadAvailableActions();
+    }
+  }, [showManualExecute, selectedNode]);
+
+  const loadAvailableAgents = async () => {
+    try {
+      const response = await configurableAgentsApi.list();
+      setAvailableAgents(response.agents || []);
+    } catch (error) {
+      console.error('Erreur lors du chargement des agents:', error);
+    }
+  };
+
+  const loadAvailableActions = async () => {
+    if (!selectedNode?.data.triggers || selectedNode.data.triggers.length === 0) {
+      setAvailableActions([]);
+      return;
+    }
+
+    try {
+      // Charger les actions du premier trigger (ou tous les triggers)
+      const allActions: ActionResponse[] = [];
+      for (const trigger of selectedNode.data.triggers) {
+        if (typeof trigger.id === 'number') {
+          const actions = await actionsApi.listByTrigger(trigger.id);
+          allActions.push(...actions);
+        }
+      }
+      setAvailableActions(allActions);
+    } catch (error) {
+      console.error('Erreur lors du chargement des actions:', error);
+    }
+  };
+
+  const handleOpenManualExecute = (trigger: any) => {
+    console.log('[NodeDetails] handleOpenManualExecute appelé pour trigger:', trigger);
+    console.log('[NodeDetails] Trigger ID:', trigger?.id, 'Type:', typeof trigger?.id);
+    console.log('[NodeDetails] Configuration du trigger:', trigger?.config);
+    
+    if (!trigger || !trigger.id) {
+      console.error('[NodeDetails] Trigger invalide - pas d\'ID:', trigger);
+      return;
+    }
+    
+    // S'assurer que le formulaire de configuration est fermé
+    setTriggerFormOpen(false);
+    setEditingTrigger(null);
+    // Ouvrir le dialogue d'exécution manuelle
+    setSelectedTriggerForExecute(trigger);
+    setShowManualExecute(true);
+    
+    // Charger la configuration du trigger si elle existe
+    const config = trigger.config || {};
+    console.log('[NodeDetails] Configuration chargée:', config);
+    
+    // Pré-remplir avec la configuration sauvegardée ou valeurs par défaut
+    // La config peut avoir selected_agent/selected_action ou task_id
+    const taskType = config.task_type || 'agent';
+    const taskId = config.task_id || (taskType === 'agent' ? config.selected_agent : config.selected_action);
+    
+    setTaskType(taskType);
+    setSelectedAgent(taskType === 'agent' ? String(taskId || '') : '');
+    setSelectedAction(taskType === 'action' ? String(taskId || '') : '');
+    setOutputType(config.output_type || 'screen');
+    setInputText(config.input_text || '');
+    // La config peut avoir email_config ou email_to/email_subject directement
+    setEmailTo(config.email_config?.to || config.email_to || '');
+    setEmailSubject(config.email_config?.subject || config.email_subject || '');
+    setExecuteResult(null);
+    setExecuteError('');
+  };
+
+  const handleCloseManualExecute = () => {
+    setShowManualExecute(false);
+    setSelectedTriggerForExecute(null);
+    setExecuteResult(null);
+    setExecuteError('');
+  };
+
+  const handleExecuteTrigger = async () => {
+    if (!selectedTriggerForExecute || !selectedTriggerForExecute.id) {
+      setExecuteError('Trigger invalide');
+      return;
+    }
+
+    // Convertir l'ID en string si nécessaire (peut être un nombre ou une string)
+    const triggerId = String(selectedTriggerForExecute.id);
+
+    const taskId = taskType === 'agent' ? selectedAgent : selectedAction;
+    if (!taskId) {
+      setExecuteError(`Veuillez sélectionner un ${taskType === 'agent' ? 'agent' : 'action'}`);
+      return;
+    }
+
+    if (outputType === 'email' && !emailTo) {
+      setExecuteError('Veuillez saisir une adresse email');
+      return;
+    }
+
+    setIsExecuting(true);
+    setExecuteError('');
+
+    try {
+      const request: TriggerManualExecuteRequest = {
+        trigger_id: triggerId,
+        task_type: taskType,
+        task_id: taskId,
+        output_type: outputType,
+        input_text: inputText || undefined,
+        email_config: outputType === 'email' ? {
+          to: emailTo,
+          subject: emailSubject || undefined,
+        } : undefined,
+      };
+
+      console.log('[NodeDetails] 🚀 Démarrage de l\'exécution du trigger:', {
+        triggerId,
+        taskType,
+        taskId,
+        inputText,
+        outputType,
+      });
+
+      const result = await triggersApi.execute(triggerId, request);
+      
+      console.log('[NodeDetails] ✅ Résultat de l\'exécution:', result);
+      
+      // Afficher les détails dans la console
+      if (result.output) {
+        console.group('📊 Détails de l\'exécution');
+        if (result.output.agent_name) {
+          console.log('🤖 Agent:', result.output.agent_name);
+        }
+        if (result.output.input_text) {
+          console.log('📥 Input text:', result.output.input_text);
+        }
+        if (result.output.prompt_used) {
+          console.log('📝 Prompt utilisé:', result.output.prompt_used);
+        }
+        console.group('📤 Sortie');
+        console.log('Sortie brute:', result.output.output_raw);
+        if (result.output.output_parsed) {
+          console.log('Sortie parsée:', result.output.output_parsed);
+        }
+        console.groupEnd();
+        if (result.output.execution_time_ms) {
+          console.log(`⏱️  Temps d'exécution: ${result.output.execution_time_ms}ms`);
+        }
+        console.groupEnd();
+      }
+      
+      setExecuteResult(result);
+      
+      // Ne pas fermer automatiquement - laisser l'utilisateur voir le résultat
+      // L'utilisateur peut fermer manuellement avec le bouton "Fermer"
+    } catch (error: any) {
+      const errorMessage = error.detail || error.message || 'Erreur lors de l\'exécution';
+      console.error('[NodeDetails] ❌ Erreur lors de l\'exécution:', error);
+      console.error('[NodeDetails] Détails de l\'erreur:', {
+        message: errorMessage,
+        error: error,
+        stack: error.stack,
+      });
+      setExecuteError(errorMessage);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  return (
+    <>
+    <AnimatePresence mode="wait">
+      {selectedNode && (
+        <motion.div
+          initial={{ opacity: 0, x: 50 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: 50 }}
+          transition={{ duration: 0.3 }}
+          style={{
+            position: 'absolute',
+            top: 16,
+            right: 16,
+            bottom: 16,
+            width: 340,
+            zIndex: 10,
+          }}
+        >
+        <Box
+          sx={{
+            height: '100%',
+            backgroundColor: '#12182B',
+            backdropFilter: 'blur(20px)',
+            borderRadius: '16px',
+            border: '1px solid rgba(0, 217, 255, 0.2)',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Header */}
+          <Box
+            sx={{
+              px: 2.5,
+              py: 2,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid rgba(0, 217, 255, 0.1)',
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <Box
+                sx={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: '50%',
+                  background: selectedNode.data.color || '#00D9FF',
+                  boxShadow: `0 0 10px ${selectedNode.data.color || '#00D9FF'}`,
+                }}
+              />
+              <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                Détails du nœud
+              </Typography>
+            </Box>
+            <IconButton
+              size="small"
+              onClick={() => setSelectedNode(null)}
+              sx={{ color: 'text.secondary' }}
+            >
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Box>
+
+          {/* Content */}
+          <Box sx={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', p: 2.5 }}>
+            {/* Edit Fields */}
+            <TextField
+              fullWidth
+              label="Titre"
+              value={editLabel}
+              onChange={(e) => setEditLabel(e.target.value)}
+              size="small"
+              sx={{ mb: 2 }}
+            />
+
+            <TextField
+              fullWidth
+              label="Description"
+              value={editDescription}
+              onChange={(e) => setEditDescription(e.target.value)}
+              multiline
+              rows={3}
+              size="small"
+              sx={{ mb: 2 }}
+            />
+
+            {/* Sélecteur de statut */}
+            <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+              <InputLabel>Statut</InputLabel>
+              <Select
+                value={editStatus}
+                label="Statut"
+                onChange={(e) => setEditStatus(e.target.value as NodeStatus)}
+                sx={{
+                  '& .MuiSelect-select': {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                  },
+                }}
+              >
+                {STATUS_ORDER.map((status) => (
+                  <MenuItem
+                    key={status}
+                    value={status}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      '&:hover': {
+                        backgroundColor: `${getStatusColor(status)}20`,
+                      },
+                      '&.Mui-selected': {
+                        backgroundColor: `${getStatusColor(status)}30`,
+                        '&:hover': {
+                          backgroundColor: `${getStatusColor(status)}40`,
+                        },
+                      },
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: '50%',
+                        backgroundColor: getStatusColor(status),
+                        boxShadow: `0 0 6px ${getStatusColor(status)}80`,
+                        flexShrink: 0,
+                      }}
+                    />
+                    {getStatusLabel(status)}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Button
+              variant="contained"
+              fullWidth
+              startIcon={<SaveIcon />}
+              onClick={handleSave}
+              disabled={isSaving}
+              sx={{ mb: 2 }}
+            >
+              {isSaving ? 'Sauvegarde...' : 'Sauvegarder'}
+            </Button>
+
+            <Button
+              variant="outlined"
+              fullWidth
+              startIcon={<AddCircleIcon />}
+              onClick={handleAddChildNodeClick}
+              disabled={isSaving}
+              sx={{ mb: 3 }}
+            >
+              Ajouter un sous-nœud
+            </Button>
+
+            <Divider sx={{ my: 2 }} />
+
+            {/* Triggers Section */}
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                  Triggers & Actions
+                </Typography>
+                <IconButton
+                  size="small"
+                  onClick={() => setShowAddTrigger(!showAddTrigger)}
+                  sx={{
+                    color: 'primary.main',
+                    background: 'rgba(0, 217, 255, 0.1)',
+                    '&:hover': { background: 'rgba(0, 217, 255, 0.2)' },
+                  }}
+                >
+                  <AddIcon fontSize="small" />
+                </IconButton>
+              </Box>
+
+              {/* Add Trigger Form */}
+              <AnimatePresence>
+                {showAddTrigger && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                  >
+                    <Box
+                      sx={{
+                        p: 2,
+                        mb: 2,
+                        borderRadius: '12px',
+                        background: 'rgba(0, 217, 255, 0.05)',
+                        border: '1px solid rgba(0, 217, 255, 0.1)',
+                      }}
+                    >
+                      <Button
+                        variant="contained"
+                        fullWidth
+                        size="small"
+                        onClick={() => {
+                          // Ouvrir directement le formulaire de configuration sans créer de trigger
+                          setShowAddTrigger(false);
+                          setEditingTrigger(null);
+                          setTriggerFormOpen(true);
+                        }}
+                        disabled={isSaving}
+                      >
+                        {isSaving ? 'Ajout...' : 'Créer un trigger'}
+                      </Button>
+                    </Box>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Triggers List */}
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                {selectedNode.data.triggers?.map((trigger) => (
+                  <Box
+                    key={trigger.id}
+                    sx={{
+                      p: 2,
+                      borderRadius: '12px',
+                      background: `${triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)]}10`,
+                      border: `1px solid ${triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)]}30`,
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Box sx={{ color: triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)] }}>
+                          {triggerIcons[trigger.trigger_type] || triggerIcons[getDisplayType(trigger.trigger_type)]}
+                        </Box>
+                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                          {triggerLabels[trigger.trigger_type] || triggerLabels[getDisplayType(trigger.trigger_type)] || trigger.trigger_type}
+                        </Typography>
+                      </Box>
+                      <IconButton
+                        size="small"
+                        onClick={async () => {
+                          if (typeof trigger.id === 'number' && selectedNode) {
+                            console.log('[NodeDetails] Suppression du trigger:', trigger.id);
+                            try {
+                              // Supprimer via l'API
+                              await triggersApi.delete(trigger.id);
+                              console.log('[NodeDetails] Trigger supprimé, mise à jour du store...');
+                              
+                              // Mettre à jour le store manuellement pour forcer le re-render
+                              const store = useMindmapStore.getState();
+                              const updatedNodes = store.nodes.map((node) => {
+                                if (node.id === selectedNode.id) {
+                                  return {
+                                    ...node,
+                                    data: {
+                                      ...node.data,
+                                      triggers: (node.data.triggers || []).filter((t) => t.id !== trigger.id),
+                                    },
+                                  };
+                                }
+                                return node;
+                              });
+                              
+                              // Mettre à jour le store et forcer la mise à jour du selectedNode
+                              useMindmapStore.setState({ nodes: updatedNodes });
+                              const updatedSelectedNode = updatedNodes.find(n => n.id === selectedNode.id);
+                              if (updatedSelectedNode) {
+                                setSelectedNode(updatedSelectedNode);
+                              }
+                              
+                              // Recharger depuis le serveur si on a un mindmap
+                              if (currentMindmap) {
+                                console.log('[NodeDetails] Rechargement du mindmap...');
+                                await loadNodes(currentMindmap.id);
+                              }
+                              
+                              console.log('[NodeDetails] Suppression terminée');
+                            } catch (error) {
+                              console.error('[NodeDetails] Erreur lors de la suppression:', error);
+                              alert('Erreur lors de la suppression du trigger');
+                            }
+                          }
+                        }}
+                        disabled={typeof trigger.id !== 'number' || isSaving}
+                        sx={{ color: 'error.main' }}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Box>
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 1 }}>
+                      <Chip
+                        label={triggerLabels[trigger.trigger_type] || triggerLabels[getDisplayType(trigger.trigger_type)] || trigger.trigger_type}
+                        size="small"
+                        sx={{
+                          background: `${triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)]}20`,
+                          color: triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)],
+                          fontSize: '0.7rem',
+                        }}
+                      />
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<PlayIcon />}
+                          onClick={() => {
+                            console.log('[NodeDetails] Clic sur Lancer pour trigger:', trigger);
+                            handleOpenManualExecute(trigger);
+                          }}
+                          disabled={!trigger.enabled || isSaving}
+                          sx={{
+                            fontSize: '0.7rem',
+                            px: 1,
+                            py: 0.5,
+                          }}
+                        >
+                          Lancer
+                        </Button>
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            console.log('[NodeDetails] Clic sur Éditer pour trigger:', trigger);
+                            // Convertir le format du trigger pour TriggerForm
+                            const triggerForForm = {
+                              id: String(trigger.id),
+                              trigger_type: trigger.trigger_type,
+                              config: trigger.config || {},
+                              enabled: trigger.enabled,
+                            };
+                            setEditingTrigger(triggerForForm);
+                            setTriggerFormOpen(true);
+                            // S'assurer que le dialogue d'exécution est fermé
+                            setShowManualExecute(false);
+                          }}
+                          sx={{ color: 'primary.main' }}
+                          title="Configurer le trigger"
+                        >
+                          <SaveIcon fontSize="small" />
+                        </IconButton>
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              size="small"
+                              checked={trigger.enabled}
+                              sx={{
+                                '& .MuiSwitch-switchBase.Mui-checked': {
+                                  color: triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)],
+                                },
+                                '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                                  backgroundColor: triggerColors[trigger.trigger_type] || triggerColors[getDisplayType(trigger.trigger_type)],
+                                },
+                              }}
+                            />
+                          }
+                          label=""
+                        />
+                      </Box>
+                    </Box>
+                  </Box>
+                ))}
+
+                {(!selectedNode.data.triggers || selectedNode.data.triggers.length === 0) && (
+                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 3 }}>
+                    Aucun trigger configuré
+                  </Typography>
+                )}
+              </Box>
+            </Box>
+          </Box>
+
+          {/* Footer */}
+          {!selectedNode.data.isRoot && (
+            <Box
+              sx={{
+                p: 2,
+                borderTop: '1px solid rgba(0, 217, 255, 0.1)',
+              }}
+            >
+              <Button
+                variant="outlined"
+                fullWidth
+                color="error"
+                startIcon={<DeleteIcon />}
+                onClick={handleDelete}
+              >
+                Supprimer le nœud
+              </Button>
+            </Box>
+          )}
+        </Box>
+      </motion.div>
+      )}
+    </AnimatePresence>
+
+    {/* Dialogue pour nommer le sous-nœud */}
+    <Dialog
+      open={showAddChildNode}
+      onClose={handleAddChildNodeCancel}
+      maxWidth="sm"
+      fullWidth
+    >
+      <DialogTitle>Ajouter un sous-nœud</DialogTitle>
+      <DialogContent>
+        <TextField
+          autoFocus
+          margin="dense"
+          label="Nom du sous-nœud"
+          fullWidth
+          variant="outlined"
+          value={newChildNodeLabel}
+          onChange={(e) => setNewChildNodeLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleAddChildNodeConfirm();
+            }
+          }}
+          placeholder={selectedNode ? `Sous-nœud de ${selectedNode.data.label}` : ''}
+          sx={{ mt: 2 }}
+        />
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={handleAddChildNodeCancel}>Annuler</Button>
+        <Button onClick={handleAddChildNodeConfirm} variant="contained" disabled={isSaving}>
+          Ajouter
+        </Button>
+      </DialogActions>
+    </Dialog>
+
+    {/* Dialogue pour lancer un trigger manuellement */}
+    <Dialog
+      open={showManualExecute}
+      onClose={handleCloseManualExecute}
+      maxWidth="md"
+      fullWidth
+    >
+      <DialogTitle>
+        Lancer le trigger manuellement
+        {selectedTriggerForExecute && (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+            {triggerLabels[selectedTriggerForExecute.trigger_type] || triggerLabels[getDisplayType(selectedTriggerForExecute.trigger_type)] || selectedTriggerForExecute.trigger_type}
+          </Typography>
+        )}
+      </DialogTitle>
+      <DialogContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+          {/* Type de task */}
+          <FormControl fullWidth>
+            <FormLabel>Type de task</FormLabel>
+            <RadioGroup
+              row
+              value={taskType}
+              onChange={(e) => {
+                setTaskType(e.target.value as 'agent' | 'action');
+                setSelectedAgent('');
+                setSelectedAction('');
+              }}
+            >
+              <FormControlLabel value="agent" control={<Radio />} label="Agent" />
+              <FormControlLabel value="action" control={<Radio />} label="Action" />
+            </RadioGroup>
+          </FormControl>
+
+          {/* Sélection de l'agent ou action */}
+          <FormControl fullWidth>
+            <InputLabel>
+              {taskType === 'agent' ? 'Sélectionner un agent' : 'Sélectionner une action'}
+            </InputLabel>
+            <Select
+              value={taskType === 'agent' ? selectedAgent : selectedAction}
+              label={taskType === 'agent' ? 'Sélectionner un agent' : 'Sélectionner une action'}
+              onChange={(e) => {
+                if (taskType === 'agent') {
+                  setSelectedAgent(e.target.value);
+                } else {
+                  setSelectedAction(e.target.value);
+                }
+              }}
+            >
+              {taskType === 'agent' ? (
+                availableAgents.map((agent) => (
+                  <MenuItem key={agent.id} value={String(agent.id)}>
+                    <Box>
+                      <Typography variant="body2" fontWeight={500}>
+                        {agent.name}
+                      </Typography>
+                      {agent.description && (
+                        <Typography variant="caption" color="text.secondary">
+                          {agent.description}
+                        </Typography>
+                      )}
+                    </Box>
+                  </MenuItem>
+                ))
+              ) : (
+                availableActions.map((action) => (
+                  <MenuItem key={action.id} value={String(action.id)}>
+                    <Box>
+                      <Typography variant="body2" fontWeight={500}>
+                        {action.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {action.action_type}
+                      </Typography>
+                    </Box>
+                  </MenuItem>
+                ))
+              )}
+            </Select>
+          </FormControl>
+
+          {/* Texte d'entrée pour l'agent */}
+          {taskType === 'agent' && (
+            <TextField
+              fullWidth
+              label="Texte d'entrée (optionnel)"
+              multiline
+              rows={3}
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              placeholder="Texte qui complétera le prompt de l'agent..."
+              helperText="Laissez vide pour utiliser la description du nœud"
+            />
+          )}
+
+          {/* Type de rendu */}
+          <FormControl fullWidth>
+            <FormLabel>Type de rendu</FormLabel>
+            <RadioGroup
+              row
+              value={outputType}
+              onChange={(e) => setOutputType(e.target.value as 'screen' | 'email')}
+            >
+              <FormControlLabel 
+                value="screen" 
+                control={<Radio />} 
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <ScreenIcon fontSize="small" />
+                    <span>À l'écran</span>
+                  </Box>
+                } 
+              />
+              <FormControlLabel 
+                value="email" 
+                control={<Radio />} 
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <EmailIcon fontSize="small" />
+                    <span>Par email</span>
+                  </Box>
+                } 
+              />
+            </RadioGroup>
+          </FormControl>
+
+          {/* Configuration email */}
+          {outputType === 'email' && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+              <TextField
+                fullWidth
+                label="Destinataire"
+                type="email"
+                value={emailTo}
+                onChange={(e) => setEmailTo(e.target.value)}
+                required
+              />
+              <TextField
+                fullWidth
+                label="Sujet (optionnel)"
+                value={emailSubject}
+                onChange={(e) => setEmailSubject(e.target.value)}
+              />
+            </Box>
+          )}
+
+          {/* Résultat ou erreur */}
+          {executeError && (
+            <Alert severity="error">{executeError}</Alert>
+          )}
+          {executeResult && (
+            <Box sx={{ mt: 1 }}>
+              <Alert severity={executeResult.success ? 'success' : 'warning'} sx={{ mb: 1 }}>
+                {executeResult.message}
+                {executeResult.email_sent && (
+                  <Typography variant="caption" display="block" sx={{ mt: 0.5, fontWeight: 600 }}>
+                    ✉️ Email envoyé avec succès
+                  </Typography>
+                )}
+                {executeResult.output?.execution_time_ms && (
+                  <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+                    ⏱️ Temps d'exécution: {executeResult.output.execution_time_ms}ms
+                  </Typography>
+                )}
+              </Alert>
+              
+              {/* Afficher les résultats seulement si l'email n'a pas été envoyé */}
+              {executeResult.output && !executeResult.email_sent && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'text.primary' }}>
+                    📊 Résultats de l'exécution
+                  </Typography>
+                  
+                  {/* Informations générales */}
+                  {(executeResult.output.agent_name || executeResult.output.input_text) && (
+                    <Box 
+                      sx={{ 
+                        mb: 2, 
+                        p: 1.5, 
+                        bgcolor: 'rgba(0, 217, 255, 0.08)',
+                        borderRadius: 1,
+                        border: '1px solid',
+                        borderColor: 'rgba(0, 217, 255, 0.2)',
+                      }}
+                    >
+                      {executeResult.output.agent_name && (
+                        <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.primary' }}>
+                          <strong style={{ color: '#00D9FF' }}>🤖 Agent:</strong> <span style={{ color: '#E8EDF5' }}>{executeResult.output.agent_name}</span>
+                        </Typography>
+                      )}
+                      {executeResult.output.input_text && (
+                        <Typography variant="caption" sx={{ display: 'block', color: 'text.primary' }}>
+                          <strong style={{ color: '#00D9FF' }}>📥 Input:</strong> <span style={{ color: '#E8EDF5' }}>{executeResult.output.input_text}</span>
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
+                  
+                  {/* Prompt utilisé */}
+                  {executeResult.output.prompt_used && (
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: 'text.primary' }}>
+                        📝 Prompt utilisé:
+                      </Typography>
+                      <Box
+                        sx={{
+                          p: 1.5,
+                          bgcolor: 'rgba(0, 217, 255, 0.05)',
+                          borderRadius: 1,
+                          overflow: 'auto',
+                          maxHeight: '300px',
+                          border: '1px solid',
+                          borderColor: 'rgba(0, 217, 255, 0.15)',
+                          '& .markdown-body': {
+                            color: 'text.secondary',
+                            fontSize: '0.75rem',
+                            lineHeight: 1.6,
+                            '& h1, & h2, & h3, & h4, & h5, & h6': {
+                              color: 'text.primary',
+                              fontWeight: 600,
+                              marginTop: '0.75em',
+                              marginBottom: '0.4em',
+                            },
+                            '& h1': {
+                              fontSize: '1.2rem',
+                              borderBottom: '1px solid rgba(0, 217, 255, 0.2)',
+                              paddingBottom: '0.3em',
+                            },
+                            '& h2': {
+                              fontSize: '1.1rem',
+                              borderBottom: '1px solid rgba(0, 217, 255, 0.15)',
+                              paddingBottom: '0.3em',
+                            },
+                            '& h3': {
+                              fontSize: '1rem',
+                            },
+                            '& p': {
+                              marginBottom: '0.5em',
+                              color: 'text.secondary',
+                            },
+                            '& ul, & ol': {
+                              marginBottom: '0.5em',
+                              paddingLeft: '1.5em',
+                              color: 'text.secondary',
+                            },
+                            '& li': {
+                              marginBottom: '0.25em',
+                            },
+                            '& strong': {
+                              color: '#00D9FF',
+                              fontWeight: 600,
+                            },
+                            '& a': {
+                              color: '#00D9FF',
+                              textDecoration: 'none',
+                              '&:hover': {
+                                textDecoration: 'underline',
+                              },
+                            },
+                            '& code': {
+                              backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                              padding: '0.2em 0.4em',
+                              borderRadius: '3px',
+                              fontSize: '0.9em',
+                              fontFamily: 'monospace',
+                              color: '#5CE1FF',
+                            },
+                            '& pre': {
+                              backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                              padding: '0.75em',
+                              borderRadius: '4px',
+                              overflow: 'auto',
+                              '& code': {
+                                backgroundColor: 'transparent',
+                                padding: 0,
+                              },
+                            },
+                            '& blockquote': {
+                              borderLeft: '4px solid rgba(0, 217, 255, 0.3)',
+                              paddingLeft: '1em',
+                              marginLeft: 0,
+                              color: 'text.secondary',
+                              fontStyle: 'italic',
+                            },
+                          },
+                        }}
+                      >
+                        <ReactMarkdown className="markdown-body">
+                          {executeResult.output.prompt_used}
+                        </ReactMarkdown>
+                      </Box>
+                    </Box>
+                  )}
+                  
+                  {/* Sortie brute (Markdown formaté) */}
+                  {executeResult.output.output_raw && (
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: 'text.primary' }}>
+                        📤 Réponse de l'agent (Markdown):
+                      </Typography>
+                      <Box
+                        sx={{
+                          p: 1.5,
+                          bgcolor: 'rgba(139, 149, 168, 0.08)',
+                          borderRadius: 1,
+                          overflow: 'auto',
+                          maxHeight: '400px',
+                          border: '1px solid',
+                          borderColor: 'rgba(139, 149, 168, 0.2)',
+                          '& .markdown-body': {
+                            color: 'text.primary',
+                            fontSize: '0.875rem',
+                            lineHeight: 1.6,
+                            '& h1, & h2, & h3, & h4, & h5, & h6': {
+                              color: 'text.primary',
+                              fontWeight: 600,
+                              marginTop: '1em',
+                              marginBottom: '0.5em',
+                            },
+                            '& h1': {
+                              fontSize: '1.5rem',
+                              borderBottom: '1px solid rgba(139, 149, 168, 0.2)',
+                              paddingBottom: '0.3em',
+                            },
+                            '& h2': {
+                              fontSize: '1.25rem',
+                              borderBottom: '1px solid rgba(139, 149, 168, 0.15)',
+                              paddingBottom: '0.3em',
+                            },
+                            '& h3': {
+                              fontSize: '1.1rem',
+                            },
+                            '& p': {
+                              marginBottom: '0.75em',
+                              color: 'text.primary',
+                            },
+                            '& ul, & ol': {
+                              marginBottom: '0.75em',
+                              paddingLeft: '1.5em',
+                              color: 'text.primary',
+                            },
+                            '& li': {
+                              marginBottom: '0.25em',
+                            },
+                            '& strong': {
+                              color: '#00D9FF',
+                              fontWeight: 600,
+                            },
+                            '& a': {
+                              color: '#00D9FF',
+                              textDecoration: 'none',
+                              '&:hover': {
+                                textDecoration: 'underline',
+                              },
+                            },
+                            '& code': {
+                              backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                              padding: '0.2em 0.4em',
+                              borderRadius: '3px',
+                              fontSize: '0.9em',
+                              fontFamily: 'monospace',
+                              color: '#5CE1FF',
+                            },
+                            '& pre': {
+                              backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                              padding: '1em',
+                              borderRadius: '4px',
+                              overflow: 'auto',
+                              '& code': {
+                                backgroundColor: 'transparent',
+                                padding: 0,
+                              },
+                            },
+                            '& blockquote': {
+                              borderLeft: '4px solid rgba(0, 217, 255, 0.3)',
+                              paddingLeft: '1em',
+                              marginLeft: 0,
+                              color: 'text.secondary',
+                              fontStyle: 'italic',
+                            },
+                            '& table': {
+                              borderCollapse: 'collapse',
+                              width: '100%',
+                              marginBottom: '1em',
+                              '& th, & td': {
+                                border: '1px solid rgba(139, 149, 168, 0.2)',
+                                padding: '0.5em',
+                                textAlign: 'left',
+                              },
+                              '& th': {
+                                backgroundColor: 'rgba(0, 217, 255, 0.1)',
+                                fontWeight: 600,
+                                color: '#00D9FF',
+                              },
+                            },
+                          },
+                        }}
+                      >
+                        <ReactMarkdown className="markdown-body">
+                          {executeResult.output.output_raw}
+                        </ReactMarkdown>
+                      </Box>
+                    </Box>
+                  )}
+                  
+                  {/* Sortie parsée - affichée seulement si différente de la sortie brute */}
+                  {executeResult.output.output_parsed && 
+                   executeResult.output.output_parsed.markdown && 
+                   executeResult.output.output_parsed.markdown !== executeResult.output.output_raw && (
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: 'text.primary' }}>
+                        📋 Données structurées (JSON):
+                      </Typography>
+                      <Box
+                        component="pre"
+                        sx={{
+                          p: 1.5,
+                          bgcolor: 'rgba(74, 222, 128, 0.08)',
+                          borderRadius: 1,
+                          fontSize: '0.75rem',
+                          overflow: 'auto',
+                          maxHeight: '300px',
+                          border: '1px solid',
+                          borderColor: 'rgba(74, 222, 128, 0.2)',
+                          color: 'text.primary',
+                          fontFamily: 'monospace',
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {JSON.stringify(executeResult.output.output_parsed, null, 2)}
+                      </Box>
+                    </Box>
+                  )}
+                  
+                  {/* Si la sortie parsée contient du markdown identique à la sortie brute, ne pas l'afficher */}
+                  {executeResult.output.output_parsed && 
+                   executeResult.output.output_parsed.markdown && 
+                   executeResult.output.output_parsed.markdown === executeResult.output.output_raw && (
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 400, display: 'block', mb: 0.5, color: 'text.secondary', fontStyle: 'italic' }}>
+                        ℹ️ La réponse a été détectée comme Markdown et est affichée ci-dessus.
+                      </Typography>
+                    </Box>
+                  )}
+                  
+                  {/* Si la sortie parsée existe mais n'est pas du markdown (JSON structuré) */}
+                  {executeResult.output.output_parsed && 
+                   !executeResult.output.output_parsed.markdown && (
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: 'text.primary' }}>
+                        📋 Données structurées (JSON):
+                      </Typography>
+                      <Box
+                        component="pre"
+                        sx={{
+                          p: 1.5,
+                          bgcolor: 'rgba(74, 222, 128, 0.08)',
+                          borderRadius: 1,
+                          fontSize: '0.75rem',
+                          overflow: 'auto',
+                          maxHeight: '300px',
+                          border: '1px solid',
+                          borderColor: 'rgba(74, 222, 128, 0.2)',
+                          color: 'text.primary',
+                          fontFamily: 'monospace',
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {JSON.stringify(executeResult.output.output_parsed, null, 2)}
+                      </Box>
+                    </Box>
+                  )}
+                  
+                  
+                  {/* Message si pas de sortie parsée */}
+                  {!executeResult.output.output_parsed && executeResult.output.output_raw && (
+                    <Alert severity="warning" sx={{ mt: 1 }}>
+                      ⚠️ La sortie n'a pas pu être parsée selon le schéma attendu. Voir la sortie brute ci-dessus.
+                    </Alert>
+                  )}
+                </Box>
+              )}
+              
+              {/* Message si l'email a été envoyé */}
+              {executeResult.email_sent && (
+                <Alert severity="success" sx={{ mt: 1 }}>
+                  ✉️ Le résultat a été envoyé par email. Vérifiez votre boîte de réception.
+                </Alert>
+              )}
+            </Box>
+          )}
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={handleCloseManualExecute} disabled={isExecuting}>
+          {executeResult ? 'Fermer' : 'Annuler'}
+        </Button>
+        {!executeResult && (
+          <Button
+            onClick={handleExecuteTrigger}
+            variant="contained"
+            startIcon={isExecuting ? <CircularProgress size={16} /> : <PlayIcon />}
+            disabled={isExecuting || (taskType === 'agent' && !selectedAgent) || (taskType === 'action' && !selectedAction)}
+          >
+            {isExecuting ? 'Exécution...' : 'Lancer'}
+          </Button>
+        )}
+      </DialogActions>
+    </Dialog>
+
+    {/* Boîte de configuration du trigger */}
+    {selectedNode?.data?.backendId && (
+      <TriggerForm
+        open={triggerFormOpen}
+        nodeId={String(selectedNode.data.backendId)}
+        trigger={editingTrigger}
+        onClose={() => {
+          setTriggerFormOpen(false);
+          setEditingTrigger(null);
+          // Recharger le mindmap après fermeture pour avoir les données à jour
+          if (currentMindmap) {
+            loadNodes(currentMindmap.id);
+          }
+        }}
+        onSave={async () => {
+          // Recharger le mindmap après sauvegarde
+          if (currentMindmap) {
+            await loadNodes(currentMindmap.id);
+            // Mettre à jour selectedNode avec les nouvelles données
+            const store = useMindmapStore.getState();
+            const updatedNode = store.nodes.find(n => n.id === selectedNode.id);
+            if (updatedNode) {
+              setSelectedNode(updatedNode);
+            }
+          }
+        }}
+      />
+    )}
+    </>
+  );
+};
+
+export default NodeDetails;

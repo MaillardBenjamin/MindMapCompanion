@@ -1,0 +1,689 @@
+"""
+Service pour charger et exécuter les agents configurables.
+"""
+
+import json
+import logging
+import time
+from typing import Dict, Any, Optional
+from sqlalchemy.orm import Session
+
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+
+from app.core.config import get_settings
+from app.models.configurable_agent import ConfigurableAgent, AgentExecutionLog
+from app.services.agent_config_parser import AgentConfigParser
+
+logger = logging.getLogger(__name__)
+
+
+def _schema_to_markdown_description(schema: Dict[str, Any], indent: int = 0) -> str:
+    """
+    Convertit un schéma JSON en description textuelle Markdown.
+    Cette description sert de référence structurelle sans inclure tout le JSON.
+    """
+    lines = []
+    indent_str = "  " * indent
+    
+    if schema.get("type") == "object":
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        
+        for prop_name, prop_schema in properties.items():
+            is_required = prop_name in required
+            req_marker = " (requis)" if is_required else " (optionnel)"
+            
+            prop_type = prop_schema.get("type", "string")
+            description = prop_schema.get("description", "")
+            
+            if prop_type == "array":
+                items = prop_schema.get("items", {})
+                if items.get("type") == "object":
+                    lines.append(f"{indent_str}- **{prop_name}**{req_marker}: Liste d'objets avec les propriétés suivantes:")
+                    if description:
+                        lines.append(f"{indent_str}  - {description}")
+                    lines.append(_schema_to_markdown_description(items, indent + 1))
+                else:
+                    item_type = items.get("type", "string")
+                    lines.append(f"{indent_str}- **{prop_name}**{req_marker}: Liste de {item_type}s")
+                    if description:
+                        lines.append(f"{indent_str}  - {description}")
+            elif prop_type == "object":
+                lines.append(f"{indent_str}- **{prop_name}**{req_marker}: Objet avec les propriétés suivantes:")
+                if description:
+                    lines.append(f"{indent_str}  - {description}")
+                lines.append(_schema_to_markdown_description(prop_schema, indent + 1))
+            else:
+                enum_values = prop_schema.get("enum")
+                if enum_values:
+                    enum_str = ", ".join([f"`{v}`" for v in enum_values])
+                    lines.append(f"{indent_str}- **{prop_name}**{req_marker}: {prop_type} - Valeurs possibles: {enum_str}")
+                else:
+                    lines.append(f"{indent_str}- **{prop_name}**{req_marker}: {prop_type}")
+                if description:
+                    lines.append(f"{indent_str}  - {description}")
+    
+    return "\n".join(lines)
+
+
+class ConfigurableAgentService:
+    """
+    Service pour gérer et exécuter les agents IA configurables.
+    
+    Ce service permet de :
+    - Créer des agents Agno depuis une configuration Markdown
+    - Exécuter des agents avec des inputs personnalisés
+    - Parser les sorties Markdown selon un schéma JSON
+    - Logger toutes les exécutions pour traçabilité
+    
+    Les agents sont configurés via des fichiers Markdown avec :
+    - Un persona (rôle de l'agent)
+    - Des instructions détaillées
+    - Un schéma de sortie JSON
+    - Des outils disponibles (web_search, etc.)
+    
+    Example:
+        >>> service = ConfigurableAgentService()
+        >>> result = service.execute_agent(
+        ...     db=session,
+        ...     agent_id=1,
+        ...     user_id=1,
+        ...     input_text="Recherche actualités IA"
+        ... )
+    """
+    
+    def __init__(self):
+        """
+        Initialise le service avec les settings et le parser de configuration.
+        """
+        self.settings = get_settings()
+        self.parser = AgentConfigParser()
+    
+    def _create_agent(self, config: ConfigurableAgent) -> Agent:
+        """
+        Crée un agent Agno depuis la configuration.
+        
+        Construit un agent Agno avec :
+        - Le modèle OpenAI configuré
+        - Les instructions (persona + instructions + schéma de sortie)
+        - Les outils disponibles (DuckDuckGo pour recherche web)
+        
+        Args:
+            config: Configuration de l'agent (ConfigurableAgent).
+        
+        Returns:
+            Agent: Instance Agno configurée et prête à l'emploi.
+        
+        Note:
+            Les outils de recherche web (DuckDuckGo) sont automatiquement
+            ajoutés si demandés dans config.tools.
+        """
+        model = OpenAIChat(
+            id=self.settings.agno_model,
+            api_key=self.settings.agno_api_key or self.settings.openai_api_key,
+        )
+        
+        # Construire les instructions
+        instructions_parts = []
+        if config.persona:
+            instructions_parts.append(f"Persona: {config.persona}")
+        if config.instructions:
+            instructions_parts.append(f"Instructions: {config.instructions}")
+        if config.output_schema:
+            # Convertir le schéma JSON en description textuelle Markdown
+            schema_description = _schema_to_markdown_description(config.output_schema)
+            instructions_parts.append(
+                "## Structure de sortie attendue (format Markdown)\n\n"
+                "Tu dois structurer ta réponse en Markdown selon les sections suivantes :\n\n"
+                f"{schema_description}\n\n"
+                "**IMPORTANT** :\n"
+                "- Réponds UNIQUEMENT en format Markdown, pas en JSON\n"
+                "- Utilise des titres (##, ###), des listes, des tableaux Markdown pour présenter les informations\n"
+                "- Inclus les URLs des sources comme liens Markdown [texte](url)\n"
+                "- Structure clairement chaque section avec des titres appropriés\n"
+                "- Respecte les champs requis mentionnés ci-dessus"
+            )
+        
+        # Charger les outils Agno si configurés
+        agno_tools = []
+        if config.tools:
+            # Normaliser les noms d'outils (supprimer les backticks et descriptions si présents)
+            normalized_tools = []
+            for tool in config.tools:
+                # Extraire juste le nom si format `tool_name` ou `tool_name` - description
+                import re
+                match = re.match(r'^`?([a-zA-Z_][a-zA-Z0-9_]*)`?', tool)
+                if match:
+                    normalized_tools.append(match.group(1))
+                else:
+                    normalized_tools.append(tool)
+            
+            logger.info(f"[ConfigurableAgent] 🔧 Outils demandés (normalisés): {normalized_tools}")
+            
+            # Vérifier si des outils de recherche web sont demandés
+            web_search_tools = ["web_search", "web_search_news", "search_news", "duckduckgo_search", "duckduckgo_news"]
+            has_web_search = any(tool in web_search_tools for tool in normalized_tools)
+            
+            if has_web_search:
+                try:
+                    from agno.tools.duckduckgo import DuckDuckGoTools
+                    # DuckDuckGoTools fournit: duckduckgo_search et duckduckgo_news
+                    duckduckgo_toolkit = DuckDuckGoTools()
+                    agno_tools.append(duckduckgo_toolkit)
+                    logger.info(f"[ConfigurableAgent] ✅ Outil DuckDuckGoTools configuré")
+                    logger.info(f"[ConfigurableAgent]   - duckduckgo_search: activé")
+                    logger.info(f"[ConfigurableAgent]   - duckduckgo_news: activé")
+                except ImportError as e:
+                    logger.error(f"[ConfigurableAgent] ❌ DuckDuckGoTools d'Agno non disponible: {e}")
+                    logger.error(f"[ConfigurableAgent] Installation requise: pip install ddgs")
+                except Exception as e:
+                    logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de DuckDuckGoTools: {e}", exc_info=True)
+            
+            # Vérifier si des outils de scraping d'offres d'emploi sont demandés
+            job_scraping_tools = ["scrape_job_offers", "job_scraping", "list_saved_offers", "send_job_matching_email"]
+            has_job_scraping = any(tool in job_scraping_tools for tool in normalized_tools)
+            
+            if has_job_scraping:
+                try:
+                    from app.tools.job_scraping_tools import JobScrapingTools
+                    # Passer la config de l'agent pour avoir accès aux scrapers et storage configurés
+                    agent_config_dict = {
+                        "scrapers": config.tools,  # Les scrapers seront extraits du frontmatter
+                        "storage": getattr(config, "storage", None),
+                    }
+                    # Si l'agent a des scrapers configurés dans le frontmatter, les utiliser
+                    if hasattr(config, "_scrapers_config"):
+                        agent_config_dict["scrapers"] = config._scrapers_config
+                    
+                    job_scraping_toolkit = JobScrapingTools(agent_config=agent_config_dict)
+                    agno_tools.append(job_scraping_toolkit)
+                    logger.info(f"[ConfigurableAgent] ✅ Outils JobScrapingTools configurés")
+                    logger.info(f"[ConfigurableAgent]   - scrape_job_offers: activé")
+                    logger.info(f"[ConfigurableAgent]   - list_saved_offers: activé")
+                    logger.info(f"[ConfigurableAgent]   - send_job_matching_email: activé")
+                except ImportError as e:
+                    logger.error(f"[ConfigurableAgent] ❌ JobScrapingTools non disponible: {e}")
+                    logger.error(f"[ConfigurableAgent] Installation requise: pip install playwright")
+                except Exception as e:
+                    logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de JobScrapingTools: {e}", exc_info=True)
+            
+            # Ajouter des informations sur les outils disponibles dans les instructions
+            if agno_tools:
+                tools_list = ", ".join(normalized_tools)
+                
+                # Instructions spécifiques pour les outils de scraping d'emploi
+                if has_job_scraping:
+                    instructions_parts.append(
+                        f"\n🔧 Outils de scraping d'offres d'emploi disponibles et ACTIFS:\n"
+                        "IMPORTANT: Tu DOIS utiliser l'outil scrape_job_offers pour obtenir des offres d'emploi réelles.\n"
+                        "\nLes outils suivants sont disponibles et fonctionnels:\n"
+                        "- scrape_job_offers: Scrape les offres depuis Cadre Emploi, Indeed, Welcome to the Jungle\n"
+                        "  Paramètres: keywords (ex: 'RH', 'Ressources Humaines'), location (ex: 'Paris')\n"
+                        "- list_saved_offers: Liste les offres déjà sauvegardées\n"
+                        "- send_job_matching_email: Envoie un email avec les résultats du matching\n"
+                        "\nINSTRUCTIONS D'UTILISATION OBLIGATOIRES:\n"
+                        "1. COMMENCE TOUJOURS par appeler scrape_job_offers avec les keywords et location du candidat\n"
+                        "2. Analyse les offres obtenues (utilise read_offer_content si nécessaire)\n"
+                        "3. Calcule les scores de compatibilité pour chaque offre\n"
+                        "4. Construis ta réponse avec les offres réelles scrapées\n"
+                        "\n⚠️ NE PAS répondre sans avoir appelé scrape_job_offers d'abord !\n"
+                        "Les outils sont automatiquement disponibles - appelle-les AVANT de répondre."
+                    )
+                
+                # Instructions pour les outils de recherche web
+                if has_web_search:
+                    instructions_parts.append(
+                        f"\n🔧 Outils de recherche web disponibles et ACTIFS:\n"
+                        "IMPORTANT: Tu DOIS utiliser les outils de recherche web pour obtenir des informations à jour.\n"
+                        "Les outils suivants sont disponibles et fonctionnels:\n"
+                        "- duckduckgo_search: Recherche web générale (utilise cet outil pour rechercher des informations)\n"
+                        "- duckduckgo_news: Recherche d'actualités récentes (utilise cet outil pour les dernières nouvelles)\n"
+                        "\nINSTRUCTIONS D'UTILISATION:\n"
+                        "1. COMMENCE par utiliser duckduckgo_search ou duckduckgo_news avec une requête pertinente\n"
+                        "2. Analyse les résultats obtenus\n"
+                        "3. Utilise ces informations récentes pour construire ta réponse\n"
+                        "4. Cite les URLs exactes des sources dans ta réponse JSON\n"
+                        "\nLes outils sont automatiquement disponibles - appelle-les AVANT de répondre."
+                    )
+            else:
+                # Si aucun outil n'a pu être chargé, mentionner dans les instructions
+                tools_list = ", ".join(normalized_tools)
+                instructions_parts.append(
+                    f"\n⚠️  Outils demandés: {tools_list}\n"
+                    "Note: Ces outils nécessitent une configuration supplémentaire pour fonctionner.\n"
+                    "Pour activer les outils de recherche, installez: pip install ddgs"
+                )
+        
+        # Ajouter des informations sur les serveurs MCP
+        if config.mcp_servers:
+            mcp_list = ", ".join(config.mcp_servers)
+            instructions_parts.append(
+                f"\nServeurs MCP disponibles: {mcp_list}\n"
+                "Ces serveurs MCP fournissent des ressources et des outils supplémentaires."
+            )
+        
+        instructions = "\n\n".join(instructions_parts) if instructions_parts else None
+        
+        # Créer l'agent avec les outils Agno
+        agent_kwargs = {
+            "name": config.name,
+            "model": model,
+            "instructions": instructions,
+        }
+        
+        # Ajouter les outils Agno si disponibles
+        if agno_tools:
+            agent_kwargs["tools"] = agno_tools
+            logger.info(f"[ConfigurableAgent] Outils Agno ajoutés à l'agent {config.name}: {[type(t).__name__ for t in agno_tools]}")
+        
+        return Agent(**agent_kwargs)
+    
+    def _parse_output(self, output_raw: str, output_schema: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Parse la sortie de l'agent selon le schéma défini"""
+        # Si pas de schéma, retourner le Markdown brut
+        if not output_schema:
+            return {"markdown": output_raw, "format": "markdown"}
+        
+        # Détecter si la sortie est en Markdown (pas de JSON)
+        import re
+        # Si la sortie commence par un titre Markdown (#) ou contient des liens Markdown [](), c'est du Markdown
+        # Ou si elle ne commence pas par { (JSON)
+        output_stripped = output_raw.strip()
+        is_markdown = (
+            output_stripped.startswith('#') or 
+            re.search(r'\[.*?\]\(https?://', output_raw) or
+            re.search(r'^##', output_raw, re.MULTILINE) or
+            (not output_stripped.startswith('{') and not output_stripped.startswith('['))
+        )
+        
+        if is_markdown:
+            logger.info(f"[ConfigurableAgent] ✅ Sortie détectée comme Markdown ({len(output_raw)} caractères)")
+            logger.debug(f"[ConfigurableAgent] Premiers 200 caractères: {output_raw[:200]}")
+            return {"markdown": output_raw, "format": "markdown"}
+        
+        # Sinon, essayer de parser comme JSON
+        try:
+            # Nettoyer le JSON en supprimant les commentaires et code blocks
+            cleaned_output = output_raw
+            
+            # Supprimer les code blocks markdown
+            import re
+            json_match = re.search(r'```(?:json)?\n(.*?)\n```', cleaned_output, re.DOTALL)
+            if json_match:
+                cleaned_output = json_match.group(1)
+            
+            # Supprimer les commentaires JavaScript
+            cleaned_output = re.sub(r'//.*?$', '', cleaned_output, flags=re.MULTILINE)
+            cleaned_output = re.sub(r'/\*.*?\*/', '', cleaned_output, flags=re.DOTALL)
+            
+            # Nettoyer les virgules en fin de ligne
+            cleaned_output = re.sub(r',\s*([}\]])', r'\1', cleaned_output)
+            
+            # Supprimer les caractères de contrôle invalides
+            # JSON n'autorise que certains caractères de contrôle dans les chaînes (échappés: \n, \r, \t, etc.)
+            # On va supprimer tous les caractères de contrôle non échappés
+            cleaned_chars = []
+            in_string = False
+            escape_next = False
+            
+            for i, char in enumerate(cleaned_output):
+                char_code = ord(char)
+                
+                # Gérer les guillemets pour savoir si on est dans une chaîne
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    cleaned_chars.append(char)
+                    escape_next = False
+                elif char == '\\' and in_string and not escape_next:
+                    escape_next = True
+                    cleaned_chars.append(char)
+                elif escape_next:
+                    # Caractère échappé - garder tel quel
+                    cleaned_chars.append(char)
+                    escape_next = False
+                elif char_code >= 32 or char in '\n\r\t':
+                    # Caractère valide
+                    cleaned_chars.append(char)
+                elif char_code < 32:
+                    # Caractère de contrôle invalide
+                    # JSON n'autorise pas les caractères de contrôle non échappés dans les chaînes
+                    # On les remplace par un espace dans les chaînes, ou on les supprime ailleurs
+                    if in_string:
+                        # Dans une chaîne JSON, remplacer par un espace (mais éviter les espaces multiples)
+                        # Sauf si c'est juste après un caractère qui ne devrait pas avoir d'espace après
+                        if cleaned_chars and cleaned_chars[-1] not in [' ', ':', ',', '{', '[']:
+                            cleaned_chars.append(' ')
+                        logger.debug(f"[ConfigurableAgent] Caractère de contrôle remplacé à la position {i}: code {char_code} (dans chaîne)")
+                    else:
+                        # En dehors d'une chaîne, supprimer complètement
+                        logger.debug(f"[ConfigurableAgent] Caractère de contrôle supprimé à la position {i}: code {char_code} (hors chaîne)")
+                else:
+                    cleaned_chars.append(char)
+            
+            cleaned_output = ''.join(cleaned_chars)
+            
+            # Réparer les URLs cassées par des caractères de contrôle
+            # Les URLs peuvent être cassées de plusieurs façons
+            def repair_broken_urls(text):
+                """Répare les URLs qui ont été cassées par des caractères de contrôle"""
+                import re
+                
+                # Pattern 1: URL complètement vidée, guillemets vides suivis directement d'une clé JSON
+                # Exemple: "url": ""reliability": "high" -> "url": "", "reliability": "high"
+                # Ce pattern doit être le premier car il est le plus spécifique
+                text = re.sub(r'"url":\s*""([a-z_]+)":', r'"url": "", "\1":', text)
+                
+                # Pattern 1b: Même chose mais avec des espaces
+                text = re.sub(r'"url":\s*""\s*([a-z_]+)":', r'"url": "", "\1":', text)
+                
+                # Pattern 2: URL tronquée où "https://" est immédiatement suivi d'une clé JSON
+                # Exemple: "url": "https://"reliability": "high" -> "url": "","reliability": "high"
+                text = re.sub(r'"url":\s*"https://""([a-z_]+)":', r'"url": "", "\1":', text)
+                text = re.sub(r'"url":\s*"http://""([a-z_]+)":', r'"url": "", "\1":', text)
+                
+                # Pattern 3: "https:" suivi d'un saut de ligne et d'un guillemet fermant
+                text = re.sub(r'"https:(\s*\n\s*)"', r'""', text)
+                text = re.sub(r'"http:(\s*\n\s*)"', r'""', text)
+                
+                # Pattern 4: "https:" suivi d'un saut de ligne puis d'autres caractères
+                text = re.sub(r'"https:(\s*\n\s*)([^"]+)"', r'"https://\2"', text)
+                text = re.sub(r'"http:(\s*\n\s*)([^"]+)"', r'"http://\2"', text)
+                
+                # Pattern 5: URLs incomplètes avec guillemets consécutifs
+                text = re.sub(r'"https:"\s*"', r'"",', text)
+                text = re.sub(r'"http:"\s*"', r'"",', text)
+                
+                # Pattern 6: URLs cassées où le domaine est absent
+                # Exemple: "https://"reliability" -> on vide l'URL
+                text = re.sub(r'"(https?://)"([a-z])', r'"", "\2', text)
+                
+                return text
+            
+            cleaned_output = repair_broken_urls(cleaned_output)
+            
+            # Nettoyer les espaces multiples, mais préserver les URLs complètes
+            def clean_spaces_preserve_urls(text):
+                """Nettoie les espaces multiples tout en préservant les URLs"""
+                import re
+                # Protéger les URLs complètes
+                url_pattern = r'"https?://[^"]*"'
+                urls = re.findall(url_pattern, text)
+                placeholders = {}
+                for idx, url in enumerate(urls):
+                    placeholder = f"__URL_PLACEHOLDER_{idx}__"
+                    placeholders[placeholder] = url
+                    text = text.replace(url, placeholder, 1)
+                
+                # Nettoyer les espaces multiples (mais préserver les sauts de ligne)
+                lines = text.split('\n')
+                cleaned_lines = []
+                for line in lines:
+                    # Nettoyer les espaces multiples dans chaque ligne
+                    cleaned_line = re.sub(r' {2,}', ' ', line)
+                    cleaned_lines.append(cleaned_line)
+                text = '\n'.join(cleaned_lines)
+                
+                # Restaurer les URLs
+                for placeholder, url in placeholders.items():
+                    text = text.replace(placeholder, url)
+                
+                return text
+            
+            cleaned_output = clean_spaces_preserve_urls(cleaned_output)
+            
+            # Essayer de parser directement
+            try:
+                parsed = json.loads(cleaned_output.strip())
+                return parsed
+            except json.JSONDecodeError as e:
+                # Si ça échoue, essayer une approche plus agressive
+                logger.debug(f"[ConfigurableAgent] Premier essai de parsing échoué: {e}")
+                
+                # Afficher le contexte autour de l'erreur pour debug
+                error_pos = e.pos if hasattr(e, 'pos') else None
+                if error_pos:
+                    start = max(0, error_pos - 100)
+                    end = min(len(cleaned_output), error_pos + 100)
+                    context = cleaned_output[start:end]
+                    logger.warning(f"[ConfigurableAgent] Contexte autour de l'erreur (pos {error_pos}, ligne {e.lineno}, colonne {e.colno}):")
+                    logger.warning(f"[ConfigurableAgent] {repr(context)}")
+                    # Afficher les codes des caractères problématiques
+                    problematic_chars = [(i, char, ord(char)) for i, char in enumerate(context, start) if ord(char) < 32 and char not in '\n\r\t']
+                    if problematic_chars:
+                        logger.warning(f"[ConfigurableAgent] Caractères problématiques trouvés: {[(pos, code, repr(char)) for pos, char, code in problematic_chars]}")
+                    # Afficher la ligne exacte de l'erreur
+                    lines = cleaned_output.split('\n')
+                    if e.lineno and e.lineno <= len(lines):
+                        error_line = lines[e.lineno - 1]
+                        logger.warning(f"[ConfigurableAgent] Ligne {e.lineno} (colonne {e.colno}): {repr(error_line)}")
+                        if e.colno and e.colno <= len(error_line):
+                            logger.warning(f"[ConfigurableAgent] Caractère problématique: {repr(error_line[e.colno-1])} (code {ord(error_line[e.colno-1])})")
+                
+                # Nettoyer tous les caractères de contrôle restants (sauf \n, \r, \t)
+                cleaned_output = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', cleaned_output)
+                
+                # Essayer de parser à nouveau
+                try:
+                    parsed = json.loads(cleaned_output.strip())
+                    logger.info(f"[ConfigurableAgent] ✅ Parsing réussi après nettoyage agressif")
+                    return parsed
+                except json.JSONDecodeError as e2:
+                    logger.warning(f"[ConfigurableAgent] Parsing échoué même après nettoyage: {e2}")
+                    # Dernière tentative : essayer d'extraire juste le JSON entre accolades
+                    json_match = re.search(r'\{[\s\S]*\}', cleaned_output)
+                    if json_match:
+                        try:
+                            parsed = json.loads(json_match.group(0))
+                            logger.info(f"[ConfigurableAgent] ✅ Parsing réussi après extraction du JSON")
+                            return parsed
+                        except json.JSONDecodeError:
+                            pass
+            
+            # Parser le JSON
+            parsed = json.loads(cleaned_output.strip())
+            return parsed
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"[ConfigurableAgent] ❌ Erreur lors du parsing de la sortie JSON: {e}")
+            logger.warning(f"[ConfigurableAgent] Position de l'erreur: ligne {e.lineno}, colonne {e.colno}")
+            logger.debug(f"[ConfigurableAgent] Sortie brute (premiers 500 caractères): {output_raw[:500]}")
+            logger.debug(f"[ConfigurableAgent] Sortie brute (autour de l'erreur): {output_raw[max(0, e.pos-100):e.pos+100]}")
+            return None
+        except Exception as e:
+            logger.error(f"Erreur lors du parsing de la sortie: {e}")
+            return None
+    
+    async def execute_agent(
+        self,
+        db: Session,
+        agent_id: int,
+        user_id: int,
+        input_text: str,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Exécute un agent configurable avec le texte fourni.
+        
+        Args:
+            db: Session de base de données
+            agent_id: ID de l'agent configurable
+            user_id: ID de l'utilisateur qui exécute
+            input_text: Texte qui complète le prompt et spécialise la demande
+            options: Options additionnelles pour l'exécution
+            
+        Returns:
+            Dictionnaire avec les résultats de l'exécution
+        """
+        start_time = time.time()
+        
+        # Charger l'agent
+        agent_config = db.query(ConfigurableAgent).filter(
+            ConfigurableAgent.id == agent_id,
+            ConfigurableAgent.is_active == True,
+        ).first()
+        
+        if not agent_config:
+            raise ValueError(f"Agent configurable avec ID {agent_id} non trouvé ou inactif")
+        
+        # Vérifier les permissions (si l'agent n'est pas public, seul le propriétaire peut l'utiliser)
+        if not agent_config.is_public and agent_config.user_id != user_id:
+            raise PermissionError(f"Vous n'êtes pas autorisé à exécuter cet agent")
+        
+        try:
+            # Vérifier que le prompt_template existe et n'est pas vide
+            prompt_template_len = len(agent_config.prompt_template) if agent_config.prompt_template else 0
+            logger.info(f"[ConfigurableAgent] 📋 Prompt template dans la DB: {prompt_template_len} caractères")
+            if not agent_config.prompt_template or prompt_template_len < 50:
+                logger.warning(f"[ConfigurableAgent] ⚠️  Prompt template semble incomplet ({prompt_template_len} caractères)")
+                logger.warning(f"[ConfigurableAgent] Contenu actuel: {agent_config.prompt_template[:500] if agent_config.prompt_template else 'VIDE'}")
+                logger.warning(f"[ConfigurableAgent] 💡 Conseil: Rechargez les agents depuis les fichiers pour mettre à jour le prompt_template")
+            else:
+                logger.debug(f"[ConfigurableAgent] Prompt template (premiers 500 chars): {agent_config.prompt_template[:500]}")
+            
+            # Rendre le prompt avec le texte d'entrée
+            prompt = self.parser.render_prompt(
+                agent_config.prompt_template,
+                input_text,
+                **(options or {}),
+            )
+            
+            logger.info(f"[ConfigurableAgent] 📝 Prompt rendu (après remplacement de {{input_text}}): {len(prompt)} caractères")
+            
+            # Note: Les outils WebSearchTools d'Agno sont maintenant intégrés directement dans l'agent
+            # L'agent peut les utiliser automatiquement pendant l'exécution
+            tool_results = {}
+            
+            logger.info(f"[ConfigurableAgent] Exécution de l'agent '{agent_config.name}' (ID: {agent_id})")
+            logger.info(f"[ConfigurableAgent] 📥 Input text: {input_text[:200]}{'...' if len(input_text) > 200 else ''}")
+            
+            # Afficher les outils disponibles pour l'agent AVANT le prompt
+            if agent_config.tools:
+                logger.info(f"[ConfigurableAgent] 🔧 Outils disponibles pour l'agent: {agent_config.tools}")
+            else:
+                logger.info(f"[ConfigurableAgent] 🔧 Aucun outil configuré pour cet agent")
+            
+            # Afficher le prompt_template AVANT le rendu pour debug
+            if agent_config.prompt_template:
+                logger.debug(f"[ConfigurableAgent] 📋 Prompt template (avant rendu, {len(agent_config.prompt_template)} caractères):\n{agent_config.prompt_template[:500]}{'...' if len(agent_config.prompt_template) > 500 else ''}")
+            
+            # Log des outils utilisés
+            if tool_results:
+                logger.info(f"[ConfigurableAgent] 🔧 Outils exécutés: {list(tool_results.keys())}")
+                for tool_name, tool_result in tool_results.items():
+                    if tool_result.get("success"):
+                        logger.info(f"[ConfigurableAgent]   ✅ {tool_name}: {len(tool_result.get('results', []))} résultat(s)")
+                    else:
+                        logger.warning(f"[ConfigurableAgent]   ❌ {tool_name}: {tool_result.get('error', 'Erreur inconnue')}")
+            
+            logger.info(f"[ConfigurableAgent] 📝 Prompt complet ({len(prompt)} caractères):\n{'='*80}\n{prompt}\n{'='*80}")
+            
+            # Créer et exécuter l'agent Agno
+            logger.info(f"[ConfigurableAgent] 🚀 Création de l'agent Agno...")
+            agno_agent = self._create_agent(agent_config)
+            
+            # Construire le prompt complet qui sera réellement envoyé
+            # Les instructions de l'agent sont dans agno_agent.instructions
+            # Le prompt rendu est ce qui sera passé à run()
+            full_prompt_parts = []
+            if hasattr(agno_agent, 'instructions') and agno_agent.instructions:
+                if isinstance(agno_agent.instructions, list):
+                    full_prompt_parts.extend(agno_agent.instructions)
+                else:
+                    full_prompt_parts.append(str(agno_agent.instructions))
+            full_prompt_parts.append(prompt)
+            full_prompt = "\n\n".join(full_prompt_parts)
+            
+            logger.info(f"[ConfigurableAgent] 📝 Prompt complet qui sera envoyé ({len(full_prompt)} caractères):\n{'='*80}\n{full_prompt}\n{'='*80}")
+            
+            logger.info(f"[ConfigurableAgent] ⏳ Exécution de l'agent (peut prendre plusieurs secondes)...")
+            response = agno_agent.run(prompt)
+            
+            output_raw = response.content if hasattr(response, 'content') else str(response)
+            
+            logger.info(f"[ConfigurableAgent] 📤 Réponse reçue (longueur: {len(output_raw)} caractères)")
+            logger.info(f"[ConfigurableAgent] 📄 Sortie brute:\n{'='*80}\n{output_raw}\n{'='*80}")
+            
+            # Parser la sortie selon le schéma
+            output_parsed = None
+            if agent_config.output_schema:
+                logger.info(f"[ConfigurableAgent] 🔍 Tentative de parsing selon le schéma défini...")
+                logger.debug(f"[ConfigurableAgent] Schéma attendu: {json.dumps(agent_config.output_schema, indent=2, ensure_ascii=False)}")
+                output_parsed = self._parse_output(output_raw, agent_config.output_schema)
+                if output_parsed:
+                    logger.info(f"[ConfigurableAgent] ✅ Sortie parsée avec succès")
+                    logger.info(f"[ConfigurableAgent] 📊 Données parsées:\n{json.dumps(output_parsed, indent=2, ensure_ascii=False)}")
+                else:
+                    logger.warning(f"[ConfigurableAgent] ⚠️  Échec du parsing de la sortie selon le schéma")
+                    logger.debug(f"[ConfigurableAgent] Sortie brute complète (pour debug):\n{output_raw}")
+            
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Logger l'exécution
+            execution_log = AgentExecutionLog(
+                agent_id=agent_id,
+                user_id=user_id,
+                input_text=input_text,
+                prompt_used=prompt,
+                output_raw=output_raw,
+                output_parsed=output_parsed,
+                success=True,
+                execution_time_ms=execution_time_ms,
+            )
+            db.add(execution_log)
+            db.commit()
+            
+            logger.info(f"[ConfigurableAgent] ✅ Exécution terminée en {execution_time_ms}ms")
+            logger.info(f"[ConfigurableAgent] 📋 Résumé:")
+            logger.info(f"   - Agent: {agent_config.name} (ID: {agent_id})")
+            logger.info(f"   - Input: {input_text[:100]}{'...' if len(input_text) > 100 else ''}")
+            logger.info(f"   - Sortie brute: {len(output_raw)} caractères")
+            logger.info(f"   - Sortie parsée: {'✅ Oui' if output_parsed else '❌ Non'}")
+            logger.info(f"   - Temps d'exécution: {execution_time_ms}ms")
+            
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "agent_name": agent_config.name,
+                "input_text": input_text,
+                "prompt_used": prompt,
+                "output_raw": output_raw,
+                "output_parsed": output_parsed,
+                "tool_results": tool_results if tool_results else None,
+                "execution_time_ms": execution_time_ms,
+            }
+            
+        except Exception as e:
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            error_message = str(e)
+            
+            logger.error(f"[ConfigurableAgent] ❌ Erreur lors de l'exécution: {error_message}", exc_info=True)
+            logger.error(f"[ConfigurableAgent] 📋 Détails de l'erreur:")
+            logger.error(f"   - Agent: {agent_config.name} (ID: {agent_id})")
+            logger.error(f"   - Input: {input_text[:100]}{'...' if len(input_text) > 100 else ''}")
+            logger.error(f"   - Prompt utilisé: {'Oui' if 'prompt' in locals() else 'Non'}")
+            if 'prompt' in locals():
+                logger.error(f"   - Longueur du prompt: {len(prompt)} caractères")
+            logger.error(f"   - Temps écoulé avant l'erreur: {execution_time_ms}ms")
+            logger.error(f"   - Type d'erreur: {type(e).__name__}")
+            
+            # Logger l'erreur
+            execution_log = AgentExecutionLog(
+                agent_id=agent_id,
+                user_id=user_id,
+                input_text=input_text,
+                prompt_used=prompt if 'prompt' in locals() else "",
+                output_raw=None,
+                output_parsed=None,
+                success=False,
+                error_message=error_message,
+                execution_time_ms=execution_time_ms,
+            )
+            db.add(execution_log)
+            db.commit()
+            
+            raise
+
+
+# Instance singleton
+configurable_agent_service = ConfigurableAgentService()
