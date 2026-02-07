@@ -6,6 +6,8 @@ from app.models.enums import TriggerType
 
 
 class TriggerCreate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     node_id: uuid.UUID
     trigger_type: TriggerType
     config: dict = {}
@@ -14,13 +16,15 @@ class TriggerCreate(BaseModel):
 
 
 class TriggerUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     config: dict | None = None
     enabled: bool | None = None
     dedupe_key: str | None = None
 
 
 class TriggerOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
     id: uuid.UUID
     node_id: uuid.UUID
@@ -32,4 +36,6 @@ class TriggerOut(BaseModel):
 
 
 class TriggerListOut(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     triggers: list[TriggerOut]

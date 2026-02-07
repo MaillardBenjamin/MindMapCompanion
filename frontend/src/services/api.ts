@@ -637,6 +637,7 @@ export interface ConfigurableAgentResponse {
   name: string;
   slug: string;
   description: string | null;
+  markdown_config: string;
   prompt_template: string;
   input_schema: Record<string, any> | null;
   output_schema: any | null;
@@ -659,8 +660,10 @@ export interface TriggerManualExecuteRequest {
   trigger_id?: string;
   task_type: 'agent' | 'action';
   task_id: string;
-  output_type: 'screen' | 'email';
+  output_type: 'screen' | 'email' | 'audio_tts' | 'audio_email';
   input_text?: string;
+  agent_options?: Record<string, any>;
+  /** Requis pour output_type "email" ou "audio_email" */
   email_config?: {
     to: string;
     subject?: string;

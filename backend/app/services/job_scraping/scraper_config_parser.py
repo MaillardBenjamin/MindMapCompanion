@@ -399,6 +399,10 @@ class TemplateResolver:
                 return None
         
         return value
+
+    def get(self, key: str) -> Any:
+        """Récupère une valeur du contexte (clé imbriquée supportée)."""
+        return self._get_nested_value(key)
     
     def add_to_context(self, key: str, value: Any):
         """Ajoute une valeur au contexte"""

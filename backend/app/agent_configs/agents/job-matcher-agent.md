@@ -11,10 +11,6 @@ storage:
 scrapers:
   - path: scrapers/cadre-emploi-scraper.md
     enabled: true
-  - path: scrapers/indeed-scraper.md
-    enabled: true
-  - path: scrapers/welcome-to-the-jungle-scraper.md
-    enabled: true
 scoring:
   min_score: 70
   weights:
@@ -71,13 +67,6 @@ scoring:
       {"value": "Alternance", "label": "Alternance"}
     ],
     "description": "Type de contrat recherché"
-  },
-  "email": {
-    "type": "email",
-    "label": "Email pour recevoir les résultats",
-    "placeholder": "votre@email.com",
-    "required": false,
-    "description": "Adresse email pour recevoir le rapport de matching"
   }
 }
 ```
@@ -94,7 +83,6 @@ Salaire souhaité : {{salary}}
 Localisation souhaitée : {{location}}
 Type d'emploi recherché : {{job_type}}
 Mots-clés de recherche : {{keywords}}
-Email pour recevoir les résultats : {{email}}
 
 ## Instructions
 
@@ -232,7 +220,7 @@ Produis un rapport structuré selon le schéma de sortie ci-dessous. Le rapport 
 
 Les outils suivants sont disponibles pour cet agent :
 
-- `scrape_job_offers` - Scrape les offres d'emploi depuis les sites configurés (Cadre Emploi, Indeed, Welcome to the Jungle)
+- `scrape_job_offers` - Scrape les offres d'emploi depuis Cadre Emploi
 - `send_job_matching_email` - Envoie un email avec les résultats du matching
 
 ## Utilisation des outils

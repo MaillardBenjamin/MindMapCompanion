@@ -13,7 +13,7 @@ import shutil
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,16 @@ class JobOffer:
             "",
             self.description if self.description else "*Aucune description disponible*",
         ])
+
+        missions = self.metadata.get("missions", "")
+        if missions and str(missions).strip():
+            body_parts.extend(["", "## Quelles sont les missions ?", "", str(missions).strip()])
+        profil_ideal = self.metadata.get("profil_ideal", "")
+        if profil_ideal and str(profil_ideal).strip():
+            body_parts.extend(["", "## Quel est le profil idéal ?", "", str(profil_ideal).strip()])
+        infos = self.metadata.get("informations_complementaires", "")
+        if infos and str(infos).strip():
+            body_parts.extend(["", "## Informations complémentaires", "", str(infos).strip()])
         
         if self.requirements:
             body_parts.extend([
@@ -191,7 +201,7 @@ class StorageManager:
         
         Args:
             offer: L'offre à stocker
-            source: Le nom de la source (cadre-emploi, indeed, etc.)
+            source: Le nom de la source (ex. cadre-emploi)
         
         Returns:
             Le chemin complet du fichier markdown
@@ -202,8 +212,11 @@ class StorageManager:
         # Formater le nom de fichier
         filename = self._format_pattern(self.config.file_pattern, offer, source)
         
-        # Construire le chemin complet
-        full_path = self.base_path / source / subdir / filename
+        # Construire le chemin complet (subdir vide = pas de sous-répertoire)
+        if subdir:
+            full_path = self.base_path / source / subdir / filename
+        else:
+            full_path = self.base_path / source / filename
         
         return full_path
     
@@ -286,6 +299,21 @@ class StorageManager:
             files.append(file_path)
         
         return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    def get_existing_offer_ids(self, source: str) -> Set[str]:
+        """
+        Retourne les IDs des offres déjà sauvegardées pour une source.
+        Utilisé pour ne scraper que les nouvelles annonces.
+        """
+        search_path = self.base_path / source
+        if not search_path.exists():
+            return set()
+        ids_ = set()
+        for f in search_path.rglob("*.md"):
+            if "archive" in str(f):
+                continue
+            ids_.add(f.stem)
+        return ids_
     
     def read_offer(self, file_path: Path) -> Optional[Dict[str, Any]]:
         """

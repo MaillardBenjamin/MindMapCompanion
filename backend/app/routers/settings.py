@@ -26,6 +26,7 @@ class SettingsUpdate(BaseModel):
     agno_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     mistral_api_key: Optional[str] = None
+    ollama_base_url: Optional[str] = None
     
     # Web Search
     google_search_api_key: Optional[str] = None
@@ -49,6 +50,7 @@ class SettingsResponse(BaseModel):
     agno_api_key: str  # Masqué
     openai_api_key: str  # Masqué
     mistral_api_key: str  # Masqué
+    ollama_base_url: str
     
     # Web Search
     google_search_api_key: str  # Masqué
@@ -73,6 +75,7 @@ async def get_settings(current_user: User = Depends(get_current_user)):
         agno_api_key="***" if settings.agno_api_key else "",
         openai_api_key="***" if settings.openai_api_key else "",
         mistral_api_key="***" if settings.mistral_api_key else "",
+        ollama_base_url=settings.ollama_base_url or "",
         google_search_api_key="***" if settings.google_search_api_key else "",
         google_search_engine_id=settings.google_search_engine_id,
         bing_search_api_key="***" if settings.bing_search_api_key else "",
@@ -118,6 +121,7 @@ async def update_settings(
         'agno_api_key': 'AGNO_API_KEY',
         'openai_api_key': 'OPENAI_API_KEY',
         'mistral_api_key': 'MISTRAL_API_KEY',
+        'ollama_base_url': 'OLLAMA_BASE_URL',
         'google_search_api_key': 'GOOGLE_SEARCH_API_KEY',
         'google_search_engine_id': 'GOOGLE_SEARCH_ENGINE_ID',
         'bing_search_api_key': 'BING_SEARCH_API_KEY',
@@ -162,9 +166,11 @@ async def test_connection(
             return {"status": "error", "message": f"Erreur de connexion: {str(e)}"}
     
     elif service == "ai":
-        # Test simple : vérifier que les clés API sont présentes
+        from app.core.agno_model import is_ollama_configured
+        if is_ollama_configured():
+            return {"status": "success", "message": "Ollama configuré (OLLAMA_BASE_URL)"}
         if not settings.agno_api_key and not settings.openai_api_key:
-            return {"status": "error", "message": "Aucune clé API configurée"}
+            return {"status": "error", "message": "Aucune clé API configurée (ou définir OLLAMA_BASE_URL pour Ollama)"}
         return {"status": "success", "message": "Clés API configurées"}
     
     elif service == "web_search":

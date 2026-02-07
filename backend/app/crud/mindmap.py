@@ -460,8 +460,18 @@ def update_trigger(db: Session, trigger_id: int, user_id: int, trigger_update: T
         return None
     
     update_data = trigger_update.model_dump(exclude_unset=True)
+    previous_config = db_trigger.config or {}
+    previous_run_at = previous_config.get("run_at")
     for field, value in update_data.items():
         setattr(db_trigger, field, value)
+    
+    # Si un trigger "date_reached" est reprogrammé, réinitialiser last_fired_at
+    # pour permettre une nouvelle exécution.
+    updated_config = update_data.get("config") if isinstance(update_data.get("config"), dict) else None
+    updated_run_at = updated_config.get("run_at") if updated_config else None
+    updated_trigger_type = update_data.get("trigger_type", db_trigger.trigger_type)
+    if updated_trigger_type == "date_reached" and updated_run_at and updated_run_at != previous_run_at:
+        db_trigger.last_fired_at = None
     
     db.commit()
     db.refresh(db_trigger)
@@ -490,7 +500,7 @@ def create_action(db: Session, action: ActionCreate, user_id: int) -> Action:
     db_action = Action(
         trigger_id=action.trigger_id,
         name=action.name,
-        type=action.type,
+        action_type=getattr(action, "action_type", None) or getattr(action, "type", None),
         order=action.order,
         enabled=action.enabled,
         config=action.config,

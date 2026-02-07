@@ -1,8 +1,12 @@
+import base64
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 from app.db.session import get_async_session
 from app.api.deps import get_current_active_user
 from app.models.user import User
@@ -153,6 +157,10 @@ async def execute_trigger_manually(
             # Exécuter un agent configurable
             from app.crud.configurable_agent import get_agent_by_id
             
+            logger.info("[TriggerExecute] 🤖 Exécution agent: task_id=%s", payload.task_id)
+            logger.info("[TriggerExecute] 📥 Payload reçu: input_text=%s (len=%s), agent_options=%s",
+                (payload.input_text or "")[:200], len(payload.input_text or ""), payload.agent_options)
+            
             agent = get_agent_by_id(db_sync, int(payload.task_id), current_user.id)
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent configurable introuvable")
@@ -166,14 +174,18 @@ async def execute_trigger_manually(
                 node = crud_mindmap.get_node(db_sync, trigger.node_id, current_user.id)
                 if node:
                     input_text = node.description or node.label or ""
+                    logger.info("[TriggerExecute] 📥 input_text depuis nœud (fallback): len=%s", len(input_text or ""))
             
-            # Exécuter l'agent
+            logger.info("[TriggerExecute] 📤 Envoi à execute_agent: input_text len=%s, agent_options keys=%s",
+                len(input_text or ""), list((payload.agent_options or {}).keys()))
+            
+            # Exécuter l'agent (options = paramètres dynamiques type input_schema)
             result = await configurable_agent_service.execute_agent(
                 db=db_sync,
                 agent_id=agent.id,
                 user_id=current_user.id,
                 input_text=input_text or "",
-                options={},
+                options=payload.agent_options or {},
             )
             
             output = {
@@ -199,12 +211,94 @@ async def execute_trigger_manually(
             )
             
             output = {"message": "Action exécutée avec succès"}
-        
+
+        # Extraire le texte pour TTS (audio_tts / audio_email)
+        def _text_for_tts(out):
+            if not out:
+                return ""
+            if out.get("output_raw"):
+                return str(out["output_raw"]).strip()
+            if out.get("message"):
+                return str(out["message"]).strip()
+            return ""
+
+        async def _prepare_text_for_tts(raw_text: str) -> str:
+            """Prépare le texte pour TTS via l'agent de prétraitement (fluide, sans markdown prononcé)."""
+            if not raw_text or not raw_text.strip():
+                return raw_text or ""
+            try:
+                from app.agents.tts_preprocessor_agent import tts_preprocessor_agent
+                resp = await tts_preprocessor_agent.execute(input_text=raw_text)
+                if resp.success and resp.data and isinstance(resp.data.get("text"), str):
+                    return resp.data["text"].strip() or raw_text.strip()
+            except Exception as e:
+                logger.warning("[TriggerExecute] Préprocesseur TTS non utilisé, texte brut: %s", e)
+            return raw_text.strip()
+
+        # Rendu Audio via TTS : générer l'audio et l'ajouter à la sortie (lecture à l'écran)
+        if payload.output_type == "audio_tts" and output:
+            from app.services.tts_service import text_to_speech_mp3
+            text_tts = _text_for_tts(output)
+            if text_tts:
+                logger.info("[TriggerExecute] 🔊 Type de rendu: AUDIO TTS")
+                text_for_tts = await _prepare_text_for_tts(text_tts)
+                mp3_bytes = text_to_speech_mp3(text_for_tts, lang="fr")
+                if mp3_bytes:
+                    output["audio_base64"] = base64.b64encode(mp3_bytes).decode("ascii")
+                    output["audio_mimetype"] = "audio/mpeg"
+                    logger.info("[TriggerExecute] ✅ Audio TTS généré")
+                else:
+                    logger.warning("[TriggerExecute] ⚠️ Échec génération TTS, sortie sans audio")
+            else:
+                logger.warning("[TriggerExecute] ⚠️ Pas de texte pour TTS")
+
+        # Rendu Audio par email : générer l'audio et envoyer par email avec pièce jointe
+        if payload.output_type == "audio_email" and output and payload.email_config:
+            from app.services.tts_service import text_to_speech_mp3
+            from app.services.email_smtp import send_email_with_attachment, format_agent_output_as_email
+            text_tts = _text_for_tts(output)
+            to_email = payload.email_config.get("to")
+            if not to_email:
+                raise HTTPException(status_code=400, detail="L'adresse email du destinataire est requise pour l'audio par email")
+            if not text_tts:
+                raise HTTPException(status_code=400, detail="Aucun texte à synthétiser pour l'audio par email")
+            logger.info("[TriggerExecute] 🔊 Type de rendu: AUDIO par EMAIL")
+            text_for_tts = await _prepare_text_for_tts(text_tts)
+            mp3_bytes = text_to_speech_mp3(text_for_tts, lang="fr")
+            if not mp3_bytes:
+                raise HTTPException(status_code=500, detail="Erreur lors de la génération de l'audio TTS")
+            agent_name_for_subject = None
+            if payload.task_type == "agent" and "agent" in locals():
+                agent_name_for_subject = getattr(agent, "name", "inconnu")
+            email_subject = payload.email_config.get("subject") or (
+                f"Audio – Résultat de l'agent {agent_name_for_subject}" if agent_name_for_subject else "Audio – Résultat de l'exécution"
+            )
+            if payload.task_type == "agent" and output:
+                body_text, body_html = format_agent_output_as_email(
+                    output_raw=output.get("output_raw", ""),
+                    output_parsed=output.get("output_parsed"),
+                    agent_name=agent_name_for_subject,
+                    input_text=input_text if "input_text" in locals() else None,
+                    execution_time_ms=output.get("execution_time_ms"),
+                )
+            else:
+                body_text = output.get("message", "Action exécutée avec succès") or "Action exécutée avec succès"
+                body_html = f"<html><body><p>{body_text}</p><p>Pièce jointe : fichier audio (TTS).</p></body></html>"
+            email_sent = send_email_with_attachment(
+                to_email=to_email,
+                subject=email_subject,
+                body_text=body_text,
+                body_html=body_html,
+                attachment_bytes=mp3_bytes,
+                attachment_filename="resultat_tts.mp3",
+                attachment_mimetype="audio/mpeg",
+            )
+            if not email_sent:
+                raise HTTPException(status_code=500, detail="Erreur lors de l'envoi de l'email avec l'audio")
+            logger.info("[TriggerExecute] ✅ Email avec audio envoyé")
+
         # Gérer le rendu de sortie
         if payload.output_type == "email" and payload.email_config:
-            import logging
-            logger = logging.getLogger(__name__)
-            
             logger.info(f"📧 [TriggerExecute] Type de rendu: EMAIL")
             logger.info(f"📧 [TriggerExecute] Configuration email: {payload.email_config}")
             
@@ -264,7 +358,7 @@ async def execute_trigger_manually(
             message="Trigger exécuté avec succès",
             execution_id=str(trigger_id),
             output=output,
-            email_sent=email_sent if payload.output_type == "email" else None,
+            email_sent=email_sent if payload.output_type in ("email", "audio_email") else None,
         )
         
     except Exception as e:

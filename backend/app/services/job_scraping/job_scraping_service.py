@@ -75,6 +75,8 @@ class JobScrapingService:
         offers = []
         saved_files = []
         
+        logger.info("[JobScrapingService] 🔧 scrape_with_config ENTRY: config_path=%s, search_params keys=%s",
+            config_path, list((search_params or {}).keys()))
         try:
             # Charger la configuration
             config = self.config_parser.load_config(config_path)
@@ -94,32 +96,39 @@ class JobScrapingService:
                     success=False,
                 )
             
-            # Créer et exécuter l'exécuteur Playwright
-            executor = PlaywrightExecutor(config, context=search_params)
-            offers = await executor.execute(search_params)
+            # Préparer le contexte : IDs existants pour ne scraper que les nouvelles annonces
+            source_name = config.name.lower().replace(" ", "-").replace("_", "-")
+            if "scraper" in source_name:
+                source_name = source_name.replace("-scraper", "").replace("scraper-", "")
+            storage_config = StorageConfig.from_dict({
+                "base_dir": config.storage.base_dir,
+                "subdir_pattern": config.storage.subdir_pattern,
+                "file_pattern": config.storage.file_pattern,
+                "archive_dir": config.storage.archive_dir,
+                "retention_days": config.storage.retention_days,
+                "cleanup_enabled": config.storage.cleanup_enabled,
+            })
+            storage_manager = StorageManager(storage_config, self.project_root)
+            existing_ids = storage_manager.get_existing_offer_ids(source_name)
+            context = dict(search_params or {})
+            context["existing_offer_ids"] = existing_ids
+            if existing_ids:
+                logger.info("[JobScrapingService] %d annonces déjà en base, scraping des nouvelles uniquement", len(existing_ids))
             
-            logger.info(f"[JobScrapingService] {len(offers)} offres extraites de {config.name}")
+            # Créer et exécuter l'exécuteur Playwright
+            logger.info("[JobScrapingService] 🚀 Exécution Playwright pour %s...", config.name)
+            executor = PlaywrightExecutor(config, context=context)
+            offers = await executor.execute(search_params)
+            logger.info("[JobScrapingService] ✅ Playwright terminé pour %s: %d offres", config.name, len(offers))
             
             # Sauvegarder les offres si demandé
             if save_to_files and offers:
-                storage_config = StorageConfig.from_dict({
-                    "base_dir": config.storage.base_dir,
-                    "subdir_pattern": config.storage.subdir_pattern,
-                    "file_pattern": config.storage.file_pattern,
-                    "archive_dir": config.storage.archive_dir,
-                    "retention_days": config.storage.retention_days,
-                    "cleanup_enabled": config.storage.cleanup_enabled,
-                })
-                
-                storage_manager = StorageManager(storage_config, self.project_root)
-                
-                # Extraire le nom de source depuis le nom de la config
-                source_name = config.name.lower().replace(" ", "-").replace("_", "-")
-                if "scraper" in source_name:
-                    source_name = source_name.replace("-scraper", "").replace("scraper-", "")
-                
                 saved_files = storage_manager.save_offers(offers, source_name)
-                logger.info(f"[JobScrapingService] {len(saved_files)} fichiers sauvegardés")
+                logger.info("[JobScrapingService] %d fichiers sauvegardés dans %s", len(saved_files), storage_manager.base_path)
+                for p in saved_files[:3]:
+                    logger.info("[JobScrapingService]   → %s", p)
+                if len(saved_files) > 3:
+                    logger.info("[JobScrapingService]   ... et %d autres", len(saved_files) - 3)
             
             return ScrapingResult(
                 source=config.name,
@@ -163,11 +172,18 @@ class JobScrapingService:
         Returns:
             Dictionnaire {source: résultat}
         """
+        logger.info(
+            "[JobScrapingService] 🔧 scrape_multiple ENTRY: config_paths=%s, search_params=%s, save_to_files=%s",
+            config_paths, search_params, save_to_files,
+        )
         results = {}
         
         for config_path in config_paths:
+            logger.info("[JobScrapingService] 📂 Scraping source: %s ...", config_path)
             result = await self.scrape_with_config(config_path, search_params, save_to_files)
             results[result.source] = result
+            logger.info("[JobScrapingService] 📂 Source %s terminée: %d offres, success=%s",
+                config_path, result.offers_count, result.success)
         
         # Résumé
         total_offers = sum(r.offers_count for r in results.values())

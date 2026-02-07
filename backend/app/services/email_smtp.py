@@ -5,6 +5,8 @@ import smtplib
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from typing import Optional
 
 from app.core.config import get_settings
@@ -131,6 +133,83 @@ def send_email(
     except Exception as e:
         logger.error(f"❌ [EmailSMTP] Erreur lors de l'envoi de l'email: {e}", exc_info=True)
         logger.error(f"❌ [EmailSMTP] Type d'erreur: {type(e).__name__}")
+        return False
+
+
+def send_email_with_attachment(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    body_html: Optional[str] = None,
+    from_email: Optional[str] = None,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_filename: str = "attachment",
+    attachment_mimetype: str = "application/octet-stream",
+) -> bool:
+    """
+    Envoie un email avec une pièce jointe (ex: fichier audio).
+
+    Args:
+        to_email: Destinataire
+        subject: Sujet
+        body_text: Corps texte
+        body_html: Corps HTML (optionnel)
+        from_email: Expéditeur (défaut: imap_user)
+        attachment_bytes: Contenu binaire de la pièce jointe
+        attachment_filename: Nom du fichier joint
+        attachment_mimetype: Type MIME (ex: "audio/mpeg" pour MP3)
+
+    Returns:
+        True si l'email a été envoyé avec succès, False sinon.
+    """
+    try:
+        logger.info(f"📧 [EmailSMTP] Envoi d'email avec pièce jointe vers {to_email}")
+        smtp_host = settings.imap_host
+        smtp_port = 587
+        smtp_user = settings.imap_user
+        smtp_password = settings.imap_password
+        from_addr = from_email or smtp_user
+
+        if attachment_bytes:
+            msg = MIMEMultipart("mixed")
+        else:
+            msg = MIMEMultipart("alternative")
+        msg["From"] = from_addr
+        msg["To"] = to_email
+        msg["Subject"] = subject
+
+        part_text = MIMEText(body_text, "plain", "utf-8")
+        if attachment_bytes:
+            msg.attach(part_text)
+            if body_html:
+                part_html = MIMEText(body_html, "html", "utf-8")
+                msg.attach(part_html)
+        else:
+            msg.attach(part_text)
+            if body_html:
+                part_html = MIMEText(body_html, "html", "utf-8")
+                msg.attach(part_html)
+
+        if attachment_bytes:
+            part = MIMEBase(*attachment_mimetype.split("/", 1))
+            part.set_payload(attachment_bytes)
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                "attachment",
+                filename=("utf-8", "", attachment_filename),
+            )
+            msg.attach(part)
+            logger.info(f"📧 [EmailSMTP] Pièce jointe: {attachment_filename} ({len(attachment_bytes)} octets)")
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        logger.info(f"✅ [EmailSMTP] Email avec pièce jointe envoyé à {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ [EmailSMTP] Erreur envoi email avec pièce jointe: {e}", exc_info=True)
         return False
 
 

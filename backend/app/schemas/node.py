@@ -8,12 +8,16 @@ from app.models.enums import NodeSource, NodeStatus, NodeType
 
 
 class IngestTextRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     text: str
     source: NodeSource = NodeSource.ui
     idempotency_key: str | None = None
 
 
 class NodeUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     title: str | None = None
     type: NodeType | None = None
     status: NodeStatus | None = None
@@ -25,7 +29,7 @@ class NodeUpdate(BaseModel):
 
 
 class NodeOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
     id: uuid.UUID
     raw_text: str
@@ -43,7 +47,7 @@ class NodeOut(BaseModel):
 
 
 class MindmapEdgeOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
     id: uuid.UUID
     from_node_id: uuid.UUID
@@ -54,11 +58,15 @@ class MindmapEdgeOut(BaseModel):
 
 
 class MindmapOut(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     nodes: list[NodeOut]
     edges: list[MindmapEdgeOut]
 
 
 class IngestResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     node: NodeOut
     proposal_id: uuid.UUID | None = None
     event_id: uuid.UUID | None = None

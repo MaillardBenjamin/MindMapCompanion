@@ -1,10 +1,12 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 
 # Schemas pour ConfigurableAgent
 class ConfigurableAgentBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     name: str
     slug: str = Field(..., description="Identifiant unique pour l'API (format: slug-case)")
     description: Optional[str] = None
@@ -25,6 +27,8 @@ class ConfigurableAgentCreate(ConfigurableAgentBase):
 
 
 class ConfigurableAgentUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     name: Optional[str] = None
     slug: Optional[str] = None
     description: Optional[str] = None
@@ -41,26 +45,31 @@ class ConfigurableAgentUpdate(BaseModel):
 
 
 class ConfigurableAgentOut(ConfigurableAgentBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     user_id: int
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class ConfigurableAgentListOut(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     agents: List[ConfigurableAgentOut]
 
 
 # Schemas pour l'exécution d'agents
 class AgentExecuteRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     input_text: str = Field(..., description="Texte qui complète le prompt et spécialise la demande")
     options: Optional[Dict[str, Any]] = Field(default=None, description="Options additionnelles pour l'exécution")
 
 
 class AgentExecuteResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     success: bool
     agent_id: int
     agent_name: str
@@ -75,6 +84,8 @@ class AgentExecuteResponse(BaseModel):
 
 # Schemas pour les logs d'exécution
 class AgentExecutionLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     agent_id: int
     agent_name: str
@@ -88,9 +99,8 @@ class AgentExecutionLogOut(BaseModel):
     execution_time_ms: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class AgentExecutionLogListOut(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     logs: List[AgentExecutionLogOut]

@@ -17,6 +17,7 @@
   - `IMAP_POLL_MINUTES=2`
   - `AGNO_MODEL=gpt-4o-mini`
   - `AGNO_API_KEY=your-key`
+  - (Optionnel) **Ollama local** : `OLLAMA_BASE_URL=http://localhost:11434/v1` et `AGNO_MODEL=qwen3:14b` (sans clé API)
   - `CORS_ORIGINS=http://localhost:5173`
 
 ## Lancement

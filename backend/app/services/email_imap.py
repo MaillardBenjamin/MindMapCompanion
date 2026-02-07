@@ -1,11 +1,20 @@
 import email
 import imaplib
+import logging
 import uuid
 from datetime import datetime
 
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def is_imap_configured() -> bool:
+    """Retourne True si IMAP est configuré (host, user, password non vides)."""
+    return bool(
+        settings.imap_host and settings.imap_user and settings.imap_password
+    )
 
 
 def _connect():
@@ -19,7 +28,16 @@ def _connect():
 
 
 def fetch_unseen_messages() -> list[dict]:
-    client = _connect()
+    if not is_imap_configured():
+        return []
+    try:
+        client = _connect()
+    except imaplib.IMAP4.error as e:
+        logger.warning("IMAP authentication failed (check IMAP_HOST, IMAP_USER, IMAP_PASSWORD): %s", e)
+        return []
+    except Exception as e:
+        logger.warning("IMAP connection error: %s", e)
+        return []
     try:
         status, data = client.search(None, "UNSEEN")
         if status != "OK":

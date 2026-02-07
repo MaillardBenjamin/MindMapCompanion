@@ -6,7 +6,7 @@ from app.models.enums import ProposalStatus
 
 
 class ProposalOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
     id: uuid.UUID
     node_id: uuid.UUID
@@ -18,4 +18,6 @@ class ProposalOut(BaseModel):
 
 
 class ProposalListOut(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     proposals: list[ProposalOut]

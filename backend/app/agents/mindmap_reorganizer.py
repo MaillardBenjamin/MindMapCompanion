@@ -396,8 +396,7 @@ Concentre-toi sur:
                                     # Créer le trigger sur le nœud cible
                                     new_trigger = TriggerCreate(
                                         node_id=action.merge_into_id,
-                                        name=source_trigger.name,
-                                        type=source_trigger.type,
+                                        trigger_type=getattr(source_trigger, "trigger_type", None) or getattr(source_trigger, "type", None),
                                         enabled=source_trigger.enabled,
                                         config=source_trigger.config,
                                     )
@@ -415,7 +414,7 @@ Concentre-toi sur:
                                             new_action = ActionCreate(
                                                 trigger_id=created_trigger.id,
                                                 name=source_action.name,
-                                                type=source_action.type,
+                                                action_type=getattr(source_action, "action_type", None) or getattr(source_action, "type", None),
                                                 order=source_action.order,
                                                 enabled=source_action.enabled,
                                                 config=source_action.config,

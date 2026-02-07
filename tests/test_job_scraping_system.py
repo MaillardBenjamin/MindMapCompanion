@@ -322,10 +322,8 @@ slug: job-matcher-agent
 scrapers:
   - path: scrapers/cadre-emploi-scraper.md
     enabled: true
-  - path: scrapers/indeed-scraper.md
+  - path: scrapers/other-scraper.md
     enabled: false
-  - path: scrapers/wttj-scraper.md
-    enabled: true
 storage:
   base_dir: data/job_offers
   retention_days: 30
@@ -339,10 +337,9 @@ storage:
         config = AgentConfigParser.parse_markdown(content)
         
         # Seuls les scrapers enabled devraient être dans la liste
-        assert len(config["scrapers"]) == 2
+        assert len(config["scrapers"]) == 1
         assert "scrapers/cadre-emploi-scraper.md" in config["scrapers"]
-        assert "scrapers/wttj-scraper.md" in config["scrapers"]
-        assert "scrapers/indeed-scraper.md" not in config["scrapers"]  # Désactivé
+        assert "scrapers/other-scraper.md" not in config["scrapers"]  # Désactivé
         
         # Le storage devrait être présent
         assert config["storage"]["base_dir"] == "data/job_offers"

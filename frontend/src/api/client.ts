@@ -5,10 +5,16 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  // Utiliser access_token qui est stocké par le système d'authentification
-  const token = localStorage.getItem("access_token");
+  // Utiliser access_token ou jwt qui est stocké par le système d'authentification
+  const token = localStorage.getItem("access_token") || localStorage.getItem("jwt");
+  console.log('[API Client] Requête:', config.method?.toUpperCase(), config.url);
+  console.log('[API Client] Token présent:', !!token);
+  console.log('[API Client] Token (premiers 20 chars):', token ? token.substring(0, 20) + '...' : 'null');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+    console.log('[API Client] Header Authorization ajouté');
+  } else {
+    console.warn('[API Client] ⚠️ Aucun token trouvé dans localStorage');
   }
   return config;
 });
@@ -18,6 +24,8 @@ export async function login(username: string, password: string) {
   params.append("username", username);
   params.append("password", password);
   const { data } = await api.post("/auth/token", params);
+  // Stocker le token dans les deux clés pour compatibilité
+  localStorage.setItem("access_token", data.access_token);
   localStorage.setItem("jwt", data.access_token);
   return data;
 }
@@ -102,20 +110,36 @@ export async function executeTrigger(triggerId: string, payload: {
   return data;
 }
 
-export async function listActions(nodeId: string) {
-  const { data } = await api.get("/actions", { params: { node_id: nodeId } });
+export async function listActions(nodeId: string | number) {
+  // Convertir en nombre pour l'API backend
+  const numericNodeId = typeof nodeId === 'string' ? parseInt(nodeId, 10) : nodeId;
+  const { data } = await api.get("/actions", { params: { node_id: numericNodeId } });
   return data;
 }
 
 export async function createAction(payload: {
-  node_id: string;
+  node_id: string | number;
   action_type: string;
   mode?: string;
   config?: Record<string, any>;
   enabled?: boolean;
 }) {
-  const { data } = await api.post("/actions", payload);
-  return data;
+  // Convertir node_id en nombre pour l'API backend
+  const numericPayload = {
+    ...payload,
+    node_id: typeof payload.node_id === 'string' ? parseInt(payload.node_id, 10) : payload.node_id,
+  };
+  console.log('[API Client] createAction appelé avec payload:', numericPayload);
+  try {
+    const { data } = await api.post("/actions", numericPayload);
+    console.log('[API Client] createAction succès:', data);
+    return data;
+  } catch (error: any) {
+    console.error('[API Client] createAction erreur:', error);
+    console.error('[API Client] Status:', error.response?.status);
+    console.error('[API Client] Response data:', error.response?.data);
+    throw error;
+  }
 }
 
 // Configurable Agents API

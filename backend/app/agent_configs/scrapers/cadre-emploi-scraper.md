@@ -3,8 +3,8 @@ name: Cadre Emploi Scraper
 site_url: https://www.cadremploi.fr/emploi/liste_offres
 storage:
   base_dir: data/job_offers/cadre-emploi
-  subdir_pattern: "{date}"
-  file_pattern: "{title_slug}-{id}.md"
+  subdir_pattern: ""
+  file_pattern: "{id}.md"
   archive_dir: data/job_offers/archive/cadre-emploi
   retention_days: 30
   cleanup_enabled: true
@@ -16,23 +16,23 @@ browser:
     height: 1080
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   timeout: 30000
-  navigation_timeout: 60000
-  wait_until: networkidle
+  navigation_timeout: 30000
+  wait_until: domcontentloaded
 credentials:
-  email_env: CADRE_EMPLOI_EMAIL
-  password_env: CADRE_EMPLOI_PASSWORD
+  email_env: null
+  password_env: null
 anti_bot:
   enabled: true
   random_delays:
-    min: 2000
-    max: 5000
+    min: 200
+    max: 600
     between_actions: true
   mouse_movements: false
   human_typing: true
 rate_limiting:
   enabled: true
-  requests_per_minute: 6
-  delay_between_requests: 10000
+  requests_per_minute: 30
+  delay_between_requests: 1000
 error_handling:
   retry_on_failure: 3
   retry_delay: 5000
@@ -40,14 +40,16 @@ error_handling:
 
 # Instructions Playwright pour Cadre Emploi
 
+Flux : construire l’URL (motscles, reg, tyc, salary) → goto → cookies (iframe) → cliquer Rechercher → extraction des liens résultats.
+
 ## Navigation
 
-### Étape 1: Accès au site
+### Étape 1: Accès au site avec URL construite
 ```yaml
 action: goto
-url: "{{site_url}}"
+url: "{{site_url}}?motscles={{search.motscles}}&reg={{search.reg}}&tyc={{search.tyc}}&salary={{search.salary_min}}"
 options:
-  wait_until: networkidle
+  wait_until: domcontentloaded
   timeout: 30000
 wait_for:
   selector: "body"
@@ -55,183 +57,99 @@ wait_for:
   timeout: 10000
 ```
 
-### Étape 2: Gestion des cookies
+### Étape 2: Cookies – iframe #appconsent, bouton TOUT ACCEPTER
 ```yaml
-action: handle_popup
-type: cookie_banner
-selector: "#didomi-host, .didomi-popup, [id*='cookie'], [class*='cookie-banner']"
-strategy: accept
-fallback:
-  - action: click
-    selector: "#didomi-notice-agree-button, button[id*='accept'], button[class*='accept'], [aria-label*='accept']"
-    timeout: 5000
-  - action: wait
-    timeout: 2000
-```
-
-## Authentification
-
-### Étape 3: Accès à la page de connexion
-```yaml
-action: click
-selector: "a[href*='connexion'], a[href*='login'], button:has-text('Connexion'), button:has-text('Se connecter')"
-wait_for:
-  selector: "form, input[type='email'], input[name='email']"
-  state: visible
-  timeout: 10000
+action: click_in_iframe
+iframe_selector: "#appconsent iframe"
+role: button
+name: "TOUT ACCEPTER"
+options:
+  timeout: 5000
 on_error:
-  - action: goto
-    url: "{{site_url}}/connexion"
-  - action: wait
-    timeout: 3000
+  - action: skip
+wait_for:
+  selector: "[role='combobox']"
+  state: visible
+  timeout: 8000
 ```
 
-### Étape 4: Remplissage email
-```yaml
-action: fill
-selector: "input[type='email'], input[name='email'], input[id*='email'], input[placeholder*='mail']"
-value: "{{credentials.email}}"
-options:
-  clear: true
-  timeout: 5000
-```
-
-### Étape 5: Remplissage mot de passe
-```yaml
-action: fill
-selector: "input[type='password'], input[name='password'], input[id*='password']"
-value: "{{credentials.password}}"
-options:
-  clear: true
-  timeout: 5000
-```
-
-### Étape 6: Soumission du formulaire
+### Étape 3: Lancer la recherche
 ```yaml
 action: click
-selector: "button[type='submit'], input[type='submit'], button:has-text('Connexion'), button:has-text('Se connecter')"
+role: button
+name: "Rechercher"
 wait_for:
-  selector: "[class*='dashboard'], [class*='profile'], [class*='account'], nav[class*='user']"
-  state: visible
-  timeout: 20000
-on_error:
-  - action: screenshot
-    path: "errors/cadre-emploi-auth-failed-{{timestamp}}.png"
-  - action: wait
-    timeout: 5000
-  - action: log
-    level: error
-    message: "Authentification échouée sur Cadre Emploi"
-```
-
-## Recherche
-
-### Étape 7: Accès à la recherche
-```yaml
-action: goto
-url: "{{site_url}}"
-options:
-  wait_until: networkidle
-  timeout: 30000
-wait_for:
-  selector: "input[name*='keyword'], input[id*='search'], input[placeholder*='recherche'], form[class*='search']"
-  state: visible
-  timeout: 10000
-```
-
-### Étape 8: Remplissage des mots-clés
-```yaml
-action: fill
-selector: "input[name*='keyword'], input[id*='keyword'], input[placeholder*='métier'], input[placeholder*='poste']"
-value: "{{search.keywords}}"
-options:
-  clear: true
-  timeout: 5000
-```
-
-### Étape 9: Remplissage de la localisation
-```yaml
-action: fill
-selector: "input[name*='location'], input[id*='location'], input[placeholder*='lieu'], input[placeholder*='ville']"
-value: "{{search.location}}"
-options:
-  clear: true
-  timeout: 5000
-```
-
-### Étape 10: Lancement de la recherche
-```yaml
-action: click
-selector: "button[type='submit'], button:has-text('Rechercher'), button[class*='search'], input[type='submit']"
-wait_for:
-  selector: "[class*='result'], [class*='job-list'], [class*='offer'], article"
+  selector: "#searchDiv, [class*='result'], main a[href*='/emploi/offre']"
   state: visible
   timeout: 20000
 ```
 
-## Extraction
+## Extraction – liens résultats puis pages détail
 
-### Étape 11: Scroll pour charger le contenu
+### Étape 4: Scroll et attente des liens offres
 ```yaml
 action: scroll
 direction: bottom
 wait_for:
-  selector: "[class*='result'], [class*='job-list'], article"
+  selector: "a[href*='offreId'], a[href*='detail_offre'], a[href*='/emploi/offre/']"
   state: visible
-  timeout: 5000
+  timeout: 15000
 ```
 
-### Étape 12: Extraction des offres
+### Étape 5: Extraire les liens détail_offre (sans cliquer)
+# Plusieurs sélecteurs : offreId, detail_offre, /emploi/offre/ - container main ou #searchDiv
 ```yaml
 action: extract_list
-container_selector: "[class*='job-list'], [class*='results'], main"
-item_selector: "[class*='job-item'], [class*='offer-item'], article[class*='job'], li[class*='result'], [data-job-id]"
+container_selector: "main, #searchDiv"
+item_selector: "a[href*='offreId'], a[href*='detail_offre'], a[href*='/emploi/offre/']"
+append: false
+store_as: offer_links
 fields:
+  - name: id
+    selector: "self"
+    type: attribute
+    attribute: href
+    transform: offre_id
   - name: title
-    selector: "h2, h3, [class*='title'], a[class*='title']"
+    selector: "self"
     type: text
     required: true
     transform: trim
+  - name: url
+    selector: "self"
+    type: attribute
+    attribute: href
+    transform: absolute_url
   - name: company
-    selector: "[class*='company'], [class*='employer'], [class*='enterprise'], span[class*='name']"
+    selector: "[class*='company'], [class*='employer'], [class*='enterprise']"
     type: text
-    required: true
+    fallback: ""
     transform: trim
   - name: location
-    selector: "[class*='location'], [class*='place'], [class*='city'], [class*='lieu']"
+    selector: "[class*='location'], [class*='place'], [class*='city']"
     type: text
-    fallback: "Non spécifié"
+    fallback: ""
     transform: trim
   - name: salary
-    selector: "[class*='salary'], [class*='salaire'], [class*='remuneration']"
+    selector: "[class*='salary'], [class*='salaire']"
     type: text
     optional: true
     transform: trim
   - name: contract_type
-    selector: "[class*='contract'], [class*='contrat'], [class*='type']"
+    selector: "[class*='contract'], [class*='contrat']"
     type: text
     optional: true
     transform: trim
   - name: description
-    selector: "[class*='description'], [class*='summary'], [class*='excerpt'], p"
+    selector: "[class*='description'], [class*='summary'], p"
     type: text
     optional: true
     transform: trim
-  - name: url
-    selector: "a[href*='offre'], a[href*='job'], h2 a, h3 a"
-    type: attribute
-    attribute: href
-    transform: absolute_url
   - name: publish_date
-    selector: "[class*='date'], time, [class*='published']"
+    selector: "[class*='date'], time"
     type: text
     optional: true
     transform: trim
-  - name: source_id
-    selector: "[data-job-id], [data-offer-id], [data-id]"
-    type: attribute
-    attribute: data-job-id
-    optional: true
 metadata:
   source: cadre-emploi
   scraped_at: "{{timestamp}}"
@@ -239,20 +157,75 @@ metadata:
   search_location: "{{search.location}}"
 ```
 
-## Pagination
-
-### Étape 13: Navigation vers les pages suivantes
+### Étape 6: Ouvrir chaque lien et extraire le détail (nouvelles annonces uniquement)
 ```yaml
-action: paginate
-strategy: click_next
-next_button:
-  selector: "a[class*='next'], button[class*='next'], [aria-label*='suivant'], a:has-text('Suivant'), a:has-text('>')"
-  wait_for:
-    selector: "[class*='job-item'], [class*='offer-item'], article[class*='job']"
+action: for_each
+items: offer_links
+item_var: offer
+limit: 10
+skip_existing: true
+steps:
+  - action: goto
+    url: "{{offer.url}}"
+    options:
+      wait_until: domcontentloaded
+      timeout: 15000
+  - action: wait_for
+    selector: "main h1, h1"
     state: visible
     timeout: 15000
-max_pages: 5
-on_no_more:
-  - action: log
-    message: "Fin de la pagination Cadre Emploi"
+  - action: extract
+    append: true
+    merge_with_item_var: offer
+    fields:
+      - name: title
+        selector: "h1"
+        type: text
+        required: true
+        transform: trim
+      - name: company
+        selector: "[class*='company'], [class*='enterprise'], a[href*='/emploi/entreprise'], h3"
+        type: text
+        fallback: ""
+        transform: trim
+      - name: location
+        selector: "[class*='location'], [class*='place'], [class*='city']"
+        type: text
+        fallback: ""
+        transform: trim
+      - name: salary
+        selector: "[class*='salary'], [class*='salaire']"
+        type: text
+        optional: true
+        transform: trim
+      - name: contract_type
+        selector: "[class*='contract'], [class*='contrat']"
+        type: text
+        optional: true
+        transform: trim
+      - name: publish_date
+        selector: "[class*='date'], time"
+        type: text
+        optional: true
+        transform: trim
+      - name: description
+        selector: "[class*='description'], [class*='content'], [class*='detail']"
+        type: text
+        optional: true
+        transform: trim
+      - name: missions
+        selector: "xpath=//h2[contains(.,'Quelles sont les missions')]/following-sibling::*[1]"
+        type: text
+        optional: true
+        transform: trim
+      - name: profil_ideal
+        selector: "xpath=//h2[contains(.,'Quel est le profil idéal')]/following-sibling::*[1]"
+        type: text
+        optional: true
+        transform: trim
+      - name: informations_complementaires
+        selector: "xpath=//h2[contains(.,'Informations complémentaires')]/following-sibling::*[1]"
+        type: text
+        optional: true
+        transform: trim
 ```

@@ -34,6 +34,7 @@ from app.crud.configurable_agent import (
     get_agent_execution_logs,
 )
 from app.services.configurable_agent_service import configurable_agent_service
+from app.services.agent_config_parser import AgentConfigParser
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,14 @@ logger = logging.getLogger(__name__)
 
 def _agent_to_dict(agent) -> dict:
     """Convertit un agent SQLAlchemy en dictionnaire, gérant l'absence de input_schema"""
+    input_schema = getattr(agent, "input_schema", None)
+    if not input_schema and getattr(agent, "markdown_config", None):
+        # Fallback: extraire le schéma depuis le markdown pour éviter un UI vide
+        try:
+            parsed_config = AgentConfigParser().parse_markdown(agent.markdown_config)
+            input_schema = parsed_config.get("input_schema")
+        except Exception as e:
+            logger.warning(f"Impossible d'extraire input_schema depuis le markdown: {e}")
     return {
         "id": agent.id,
         "user_id": agent.user_id,
@@ -49,7 +58,7 @@ def _agent_to_dict(agent) -> dict:
         "description": agent.description,
         "markdown_config": agent.markdown_config,
         "prompt_template": agent.prompt_template,
-        "input_schema": getattr(agent, "input_schema", None),  # Gérer l'absence de la colonne
+        "input_schema": input_schema,  # Gérer l'absence de la colonne
         "output_schema": agent.output_schema,
         "tools": agent.tools,
         "mcp_servers": agent.mcp_servers,

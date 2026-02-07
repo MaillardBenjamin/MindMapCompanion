@@ -1,10 +1,12 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 
 # Schemas pour Mindmap
 class MindmapBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     name: str
     description: Optional[str] = None
 
@@ -14,24 +16,27 @@ class MindmapCreate(MindmapBase):
 
 
 class MindmapUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     name: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
 
 
 class MindmapResponse(MindmapBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     user_id: int
     is_active: bool
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 # Schemas pour Node
 class NodeBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     label: str
     description: Optional[str] = None
     color: Optional[str] = "#00D9FF"
@@ -47,6 +52,8 @@ class NodeCreate(NodeBase):
 
 
 class NodeUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     label: Optional[str] = None
     description: Optional[str] = None
     color: Optional[str] = None
@@ -57,22 +64,25 @@ class NodeUpdate(BaseModel):
 
 
 class NodeResponse(NodeBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     mindmap_id: int
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class NodeWithChildren(NodeResponse):
+    model_config = ConfigDict(protected_namespaces=())
+    
     children: List["NodeResponse"] = []
     triggers: List["TriggerResponse"] = []
 
 
 # Schemas pour Trigger
 class TriggerBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     trigger_type: str  # email_received, date_reached, cron, state_changed, manual
     enabled: Optional[bool] = True
     config: Optional[Dict[str, Any]] = None
@@ -83,29 +93,34 @@ class TriggerCreate(TriggerBase):
 
 
 class TriggerUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     trigger_type: Optional[str] = None
     enabled: Optional[bool] = None
     config: Optional[Dict[str, Any]] = None
 
 
 class TriggerResponse(TriggerBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     node_id: int
     last_fired_at: Optional[str] = None
     dedupe_key: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-
 
 class TriggerWithActions(TriggerResponse):
+    model_config = ConfigDict(protected_namespaces=())
+    
     actions: List["ActionResponse"] = []
 
 
 # Schemas pour Action
 class ActionBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=(), populate_by_name=True)
+    
     name: str
-    type: str  # api_call, notification, task, script, email, etc.
+    action_type: str = Field(alias="type")  # api_call, notification, task, script, email, etc.
     order: Optional[int] = 0
     enabled: Optional[bool] = True
     config: Optional[Dict[str, Any]] = None  # Pour email: {"to": "email@example.com", "subject": "...", "body": "..."}
@@ -116,25 +131,28 @@ class ActionCreate(ActionBase):
 
 
 class ActionUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=(), populate_by_name=True)
+    
     name: Optional[str] = None
-    type: Optional[str] = None
+    action_type: Optional[str] = Field(default=None, alias="type")
     order: Optional[int] = None
     enabled: Optional[bool] = None
     config: Optional[Dict[str, Any]] = None
 
 
 class ActionResponse(ActionBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     trigger_id: int
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 # Schema pour Mindmap complet avec nodes
 class MindmapWithNodes(MindmapResponse):
+    model_config = ConfigDict(protected_namespaces=())
+    
     nodes: List[NodeWithChildren] = []
 
 

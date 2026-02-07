@@ -24,15 +24,15 @@ def _extract_json(text: str) -> dict:
 
 
 def _build_agent():
-    if not settings.agno_api_key:
-        raise RuntimeError("AGNO_API_KEY manquant.")
+    from app.core.agno_model import get_agno_chat_model, is_ollama_configured
+    if not is_ollama_configured() and not settings.agno_api_key and not settings.openai_api_key:
+        raise RuntimeError("AGNO_API_KEY/OPENAI_API_KEY manquant, ou configurez OLLAMA_BASE_URL pour Ollama.")
     try:
         from agno.agent import Agent
-        from agno.models.openai import OpenAIChat
     except Exception as exc:  # pragma: no cover - dépendance externe
         raise RuntimeError("Agno non disponible dans l'environnement.") from exc
 
-    model = OpenAIChat(id=settings.agno_model, api_key=settings.agno_api_key)
+    model = get_agno_chat_model()
     return Agent(model=model, instructions=[SYSTEM_PROMPT])
 
 

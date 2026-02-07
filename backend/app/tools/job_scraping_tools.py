@@ -54,7 +54,7 @@ class JobScrapingTools(Toolkit):
         
         logger.info(f"[JobScrapingTools] Initialisé avec {len(self.configured_scrapers)} scrapers configurés")
     
-    @tool(description="Scrape les offres d'emploi depuis les sites configurés (Cadre Emploi, Indeed, Welcome to the Jungle). Retourne les chemins des fichiers markdown sauvegardés.")
+    @tool(description="Scrape les offres d'emploi depuis Cadre Emploi. Retourne les chemins des fichiers markdown sauvegardés.")
     def scrape_job_offers(
         self,
         keywords: str,
@@ -87,13 +87,18 @@ class JobScrapingTools(Toolkit):
             ]
         
         if not scraper_paths:
-            # Utiliser les scrapers par défaut
-            scraper_paths = [
-                "scrapers/cadre-emploi-scraper.md",
-                "scrapers/indeed-scraper.md",
-                "scrapers/welcome-to-the-jungle-scraper.md",
-            ]
+            # En 1er temps : uniquement Cadre Emploi
+            scraper_paths = ["scrapers/cadre-emploi-scraper.md"]
+            logger.info("[JobScrapingTools] Aucun scraper configuré → utilisation Cadre Emploi par défaut")
         
+        logger.info(
+            "[JobScrapingTools] 🔧 INVOCATION scrape_job_offers: keywords=%r, location=%r, sources=%r",
+            keywords, location, sources,
+        )
+        logger.info(
+            "[JobScrapingTools] 📂 configured_scrapers=%s, scraper_paths utilisés=%s",
+            self.configured_scrapers, scraper_paths,
+        )
         logger.info(f"[JobScrapingTools] Scraping avec {len(scraper_paths)} sources: {scraper_paths}")
         
         # Exécuter le scraping de manière synchrone (Agno tools sont synchrones)
@@ -104,6 +109,7 @@ class JobScrapingTools(Toolkit):
             asyncio.set_event_loop(loop)
         
         try:
+            logger.info("[JobScrapingTools] 🚀 Démarrage du scraping (scrape_multiple)...")
             results = loop.run_until_complete(
                 self.scraping_service.scrape_multiple(
                     config_paths=scraper_paths,
@@ -111,6 +117,9 @@ class JobScrapingTools(Toolkit):
                     save_to_files=True,
                 )
             )
+            total = sum(r.offers_count for r in results.values())
+            files = sum(len(r.saved_files) for r in results.values())
+            logger.info("[JobScrapingTools] ✅ Scraping terminé: %d offres, %d fichiers sauvegardés", total, files)
         except Exception as e:
             logger.error(f"[JobScrapingTools] Erreur lors du scraping: {e}", exc_info=True)
             return f"Erreur lors du scraping: {str(e)}"
@@ -151,7 +160,7 @@ class JobScrapingTools(Toolkit):
         Liste les offres d'emploi sauvegardées.
         
         Args:
-            source: Filtrer par source (cadre-emploi, indeed, welcome-to-the-jungle)
+            source: Filtrer par source (cadre-emploi)
             days: Nombre de jours à considérer (défaut: 7)
         
         Returns:

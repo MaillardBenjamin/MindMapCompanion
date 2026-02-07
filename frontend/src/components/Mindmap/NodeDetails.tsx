@@ -45,6 +45,7 @@ import {
   triggersApi, 
   configurableAgentsApi, 
   actionsApi,
+  ApiErrorResponse,
   type TriggerCreate,
   type ConfigurableAgentResponse,
   type ActionResponse,
@@ -110,6 +111,22 @@ const triggerColors: Record<string, string> = {
   date_reached: '#FBBF24',
 };
 
+const parseInputSchemaFromMarkdown = (markdown?: string) => {
+  if (!markdown) return null;
+  try {
+    const sectionMatch = markdown.match(/#\s*Input Schema[\s\S]*?(?=^#\s|\Z)/m);
+    if (!sectionMatch) return null; // Pas de section Input Schema → ne pas utiliser le premier bloc JSON (évite de prendre l'Output Schema)
+    const sectionContent = sectionMatch[0];
+    const jsonMatch =
+      sectionContent.match(/```json\s*([\s\S]*?)```/m) ||
+      sectionContent.match(/```\s*([\s\S]*?)```/m);
+    if (!jsonMatch) return null;
+    return JSON.parse(jsonMatch[1]);
+  } catch {
+    return null;
+  }
+};
+
 const NodeDetails = () => {
   const { selectedNode, setSelectedNode, updateNode, addTrigger, removeTrigger, deleteNode, addChildNode, isSaving, currentMindmap, loadNodes } = useMindmapStore();
   const { showSuccess, showError, showWarning } = useNotification();
@@ -128,12 +145,13 @@ const NodeDetails = () => {
   const [taskType, setTaskType] = useState<'agent' | 'action'>('agent');
   const [selectedAgent, setSelectedAgent] = useState<string>('');
   const [selectedAction, setSelectedAction] = useState<string>('');
-  const [outputType, setOutputType] = useState<'screen' | 'email'>('screen');
+  const [outputType, setOutputType] = useState<'screen' | 'email' | 'audio_tts' | 'audio_email'>('screen');
   const [inputText, setInputText] = useState('');
   const [emailTo, setEmailTo] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
   const [availableAgents, setAvailableAgents] = useState<ConfigurableAgentResponse[]>([]);
   const [availableActions, setAvailableActions] = useState<ActionResponse[]>([]);
+  const [agentOptions, setAgentOptions] = useState<Record<string, any>>({});
   const [isExecuting, setIsExecuting] = useState(false);
   const [executeResult, setExecuteResult] = useState<any>(null);
   const [executeError, setExecuteError] = useState<string>('');
@@ -300,6 +318,7 @@ const NodeDetails = () => {
     setSelectedAction(taskType === 'action' ? String(taskId || '') : '');
     setOutputType(config.output_type || 'screen');
     setInputText(config.input_text || '');
+    setAgentOptions(config.agent_options || {});
     // La config peut avoir email_config ou email_to/email_subject directement
     setEmailTo(config.email_config?.to || config.email_to || '');
     setEmailSubject(config.email_config?.subject || config.email_subject || '');
@@ -329,7 +348,7 @@ const NodeDetails = () => {
       return;
     }
 
-    if (outputType === 'email' && !emailTo) {
+    if ((outputType === 'email' || outputType === 'audio_email') && !emailTo) {
       setExecuteError('Veuillez saisir une adresse email');
       return;
     }
@@ -338,13 +357,17 @@ const NodeDetails = () => {
     setExecuteError('');
 
     try {
+      const effectiveInputText = taskType === 'agent' && agentOptions.input_text != null && agentOptions.input_text !== ''
+        ? String(agentOptions.input_text)
+        : (inputText || undefined);
       const request: TriggerManualExecuteRequest = {
         trigger_id: triggerId,
         task_type: taskType,
         task_id: taskId,
         output_type: outputType,
-        input_text: inputText || undefined,
-        email_config: outputType === 'email' ? {
+        input_text: effectiveInputText,
+        agent_options: taskType === 'agent' && Object.keys(agentOptions).length > 0 ? agentOptions : undefined,
+        email_config: (outputType === 'email' || outputType === 'audio_email') ? {
           to: emailTo,
           subject: emailSubject || undefined,
         } : undefined,
@@ -648,40 +671,73 @@ const NodeDetails = () => {
                           if (typeof trigger.id === 'number' && selectedNode) {
                             console.log('[NodeDetails] Suppression du trigger:', trigger.id);
                             try {
+                              const removeFromStore = async () => {
+                                console.log('[NodeDetails] Trigger supprimé, mise à jour du store...');
+                                
+                                // Mettre à jour le store manuellement pour forcer le re-render
+                                const store = useMindmapStore.getState();
+                                const updatedNodes = store.nodes.map((node) => {
+                                  if (node.id === selectedNode.id) {
+                                    return {
+                                      ...node,
+                                      data: {
+                                        ...node.data,
+                                        triggers: (node.data.triggers || []).filter((t) => t.id !== trigger.id),
+                                      },
+                                    };
+                                  }
+                                  return node;
+                                });
+                                
+                                // Mettre à jour le store et forcer la mise à jour du selectedNode
+                                useMindmapStore.setState({ nodes: updatedNodes });
+                                const updatedSelectedNode = updatedNodes.find(n => n.id === selectedNode.id);
+                                if (updatedSelectedNode) {
+                                  setSelectedNode(updatedSelectedNode);
+                                }
+                                
+                                // Recharger depuis le serveur si on a un mindmap
+                                if (currentMindmap) {
+                                  console.log('[NodeDetails] Rechargement du mindmap...');
+                                  await loadNodes(currentMindmap.id);
+                                }
+                                
+                                console.log('[NodeDetails] Suppression terminée');
+                              };
+
                               // Supprimer via l'API
                               await triggersApi.delete(trigger.id);
-                              console.log('[NodeDetails] Trigger supprimé, mise à jour du store...');
-                              
-                              // Mettre à jour le store manuellement pour forcer le re-render
-                              const store = useMindmapStore.getState();
-                              const updatedNodes = store.nodes.map((node) => {
-                                if (node.id === selectedNode.id) {
-                                  return {
-                                    ...node,
-                                    data: {
-                                      ...node.data,
-                                      triggers: (node.data.triggers || []).filter((t) => t.id !== trigger.id),
-                                    },
-                                  };
-                                }
-                                return node;
-                              });
-                              
-                              // Mettre à jour le store et forcer la mise à jour du selectedNode
-                              useMindmapStore.setState({ nodes: updatedNodes });
-                              const updatedSelectedNode = updatedNodes.find(n => n.id === selectedNode.id);
-                              if (updatedSelectedNode) {
-                                setSelectedNode(updatedSelectedNode);
-                              }
-                              
-                              // Recharger depuis le serveur si on a un mindmap
-                              if (currentMindmap) {
-                                console.log('[NodeDetails] Rechargement du mindmap...');
-                                await loadNodes(currentMindmap.id);
-                              }
-                              
-                              console.log('[NodeDetails] Suppression terminée');
+                              await removeFromStore();
                             } catch (error) {
+                              if (error instanceof ApiErrorResponse && error.status === 404) {
+                                console.warn('[NodeDetails] Trigger déjà supprimé côté serveur, nettoyage du store...');
+                                await (async () => {
+                                  const store = useMindmapStore.getState();
+                                  const updatedNodes = store.nodes.map((node) => {
+                                    if (node.id === selectedNode.id) {
+                                      return {
+                                        ...node,
+                                        data: {
+                                          ...node.data,
+                                          triggers: (node.data.triggers || []).filter((t) => t.id !== trigger.id),
+                                        },
+                                      };
+                                    }
+                                    return node;
+                                  });
+                                  useMindmapStore.setState({ nodes: updatedNodes });
+                                  const updatedSelectedNode = updatedNodes.find(n => n.id === selectedNode.id);
+                                  if (updatedSelectedNode) {
+                                    setSelectedNode(updatedSelectedNode);
+                                  }
+                                  if (currentMindmap) {
+                                    console.log('[NodeDetails] Rechargement du mindmap...');
+                                    await loadNodes(currentMindmap.id);
+                                  }
+                                  console.log('[NodeDetails] Suppression terminée');
+                                })();
+                                return;
+                              }
                               console.error('[NodeDetails] Erreur lors de la suppression:', error);
                               alert('Erreur lors de la suppression du trigger');
                             }
@@ -859,6 +915,7 @@ const NodeDetails = () => {
                 setTaskType(e.target.value as 'agent' | 'action');
                 setSelectedAgent('');
                 setSelectedAction('');
+                setAgentOptions({});
               }}
             >
               <FormControlLabel value="agent" control={<Radio />} label="Agent" />
@@ -877,6 +934,7 @@ const NodeDetails = () => {
               onChange={(e) => {
                 if (taskType === 'agent') {
                   setSelectedAgent(e.target.value);
+                  setAgentOptions({});
                 } else {
                   setSelectedAction(e.target.value);
                 }
@@ -914,19 +972,96 @@ const NodeDetails = () => {
             </Select>
           </FormControl>
 
-          {/* Texte d'entrée pour l'agent */}
-          {taskType === 'agent' && (
-            <TextField
-              fullWidth
-              label="Texte d'entrée (optionnel)"
-              multiline
-              rows={3}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Texte qui complétera le prompt de l'agent..."
-              helperText="Laissez vide pour utiliser la description du nœud"
-            />
-          )}
+          {/* Champs dynamiques de l'agent ou texte d'entrée générique */}
+          {taskType === 'agent' && selectedAgent && (() => {
+            const selectedAgentData = availableAgents.find(a => String(a.id) === selectedAgent);
+            const resolvedInputSchema =
+              selectedAgentData?.input_schema ||
+              parseInputSchemaFromMarkdown(selectedAgentData?.markdown_config);
+            const hasInputSchema = resolvedInputSchema && Object.keys(resolvedInputSchema).length > 0;
+
+            if (hasInputSchema) {
+              return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                    Paramètres de l'agent
+                  </Typography>
+                  {Object.entries(resolvedInputSchema as Record<string, any>).map(([key, field]: [string, any]) => {
+                    const fieldValue = agentOptions[key] ?? '';
+                    const isRequired = field.required === true;
+
+                    if (field.type === 'select') {
+                      return (
+                        <FormControl key={key} fullWidth required={isRequired}>
+                          <InputLabel>{field.label}</InputLabel>
+                          <Select
+                            value={fieldValue}
+                            onChange={(e) => setAgentOptions({ ...agentOptions, [key]: e.target.value })}
+                            label={field.label}
+                          >
+                            {field.options?.map((option: any) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                {option.label}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                          {field.description && (
+                            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                              {field.description}
+                            </Typography>
+                          )}
+                        </FormControl>
+                      );
+                    }
+
+                    if (field.type === 'textarea') {
+                      return (
+                        <TextField
+                          key={key}
+                          label={field.label}
+                          placeholder={field.placeholder}
+                          value={fieldValue}
+                          onChange={(e) => setAgentOptions({ ...agentOptions, [key]: e.target.value })}
+                          multiline
+                          rows={field.rows || 3}
+                          fullWidth
+                          required={isRequired}
+                          helperText={field.description}
+                        />
+                      );
+                    }
+
+                    return (
+                      <TextField
+                        key={key}
+                        label={field.label}
+                        placeholder={field.placeholder}
+                        type={field.type || 'text'}
+                        value={fieldValue}
+                        onChange={(e) => setAgentOptions({ ...agentOptions, [key]: e.target.value })}
+                        fullWidth
+                        required={isRequired}
+                        helperText={field.description}
+                      />
+                    );
+                  })}
+                </Box>
+              );
+            }
+
+            return (
+              <TextField
+                fullWidth
+                label="Texte d'entrée (optionnel)"
+                multiline
+                rows={3}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="Texte qui complétera le prompt de l'agent..."
+                helperText="Laissez vide pour utiliser la description du nœud"
+              />
+            );
+          })()}
 
           {/* Type de rendu */}
           <FormControl fullWidth>
@@ -934,7 +1069,7 @@ const NodeDetails = () => {
             <RadioGroup
               row
               value={outputType}
-              onChange={(e) => setOutputType(e.target.value as 'screen' | 'email')}
+              onChange={(e) => setOutputType(e.target.value as 'screen' | 'email' | 'audio_tts' | 'audio_email')}
             >
               <FormControlLabel 
                 value="screen" 
@@ -956,11 +1091,21 @@ const NodeDetails = () => {
                   </Box>
                 } 
               />
+              <FormControlLabel 
+                value="audio_tts" 
+                control={<Radio />} 
+                label="Audio (TTS)" 
+              />
+              <FormControlLabel 
+                value="audio_email" 
+                control={<Radio />} 
+                label="Audio par email" 
+              />
             </RadioGroup>
           </FormControl>
 
-          {/* Configuration email */}
-          {outputType === 'email' && (
+          {/* Configuration email (Par email ou Audio par email) */}
+          {(outputType === 'email' || outputType === 'audio_email') && (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
               <TextField
                 fullWidth
@@ -998,6 +1143,22 @@ const NodeDetails = () => {
                   </Typography>
                 )}
               </Alert>
+
+              {/* Lecteur audio (TTS) */}
+              {executeResult.output?.audio_base64 && (
+                <Box sx={{ mt: 2, p: 2, bgcolor: 'rgba(0, 217, 255, 0.08)', borderRadius: 1, border: '1px solid rgba(0, 217, 255, 0.2)' }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'text.primary' }}>
+                    🔊 Écouter l'audio (TTS)
+                  </Typography>
+                  <audio
+                    controls
+                    style={{ width: '100%' }}
+                    src={`data:${executeResult.output.audio_mimetype || 'audio/mpeg'};base64,${executeResult.output.audio_base64}`}
+                  >
+                    Votre navigateur ne prend pas en charge l'audio.
+                  </audio>
+                </Box>
+              )}
               
               {/* Afficher les résultats seulement si l'email n'a pas été envoyé */}
               {executeResult.output && !executeResult.email_sent && (

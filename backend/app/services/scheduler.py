@@ -2,7 +2,7 @@ import asyncio
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, cast, String, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -10,9 +10,9 @@ from app.db.session import get_AsyncSessionLocal
 from app.models.enums import ActionType, EventType, MailProvider, NodeSource, NodeStatus, TriggerType
 from app.models.mail_cache import MailCache
 from app.models.node import Node
-from app.models.trigger import Trigger
+from app.models.mindmap import Trigger as MindmapTrigger
 from app.services.agent_structurer import run_structurer_mindmap
-from app.services.email_imap import fetch_unseen_messages
+from app.services.email_imap import fetch_unseen_messages, is_imap_configured
 from app.services.executor import execute_actions_for_node
 from app.services.events import get_or_create_event
 from app.services.proposals import create_proposal
@@ -140,18 +140,22 @@ async def _process_email_batch(session: AsyncSession, messages: list[dict]) -> N
 
 
 async def poll_imap() -> None:
-    # NOTE: `imaplib` est bloquant -> on l'exécute dans un thread pour ne pas bloquer l'event loop asyncio.
-    # On conserve ici une API async côté scheduler, tout en isolant l'I/O sync IMAP.
-    messages = await asyncio.to_thread(fetch_unseen_messages)
-    if not messages:
-        return
-    AsyncSessionLocal = get_AsyncSessionLocal()
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            await _process_email_batch(session, messages)
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        # NOTE: `imaplib` est bloquant -> on l'exécute dans un thread pour ne pas bloquer l'event loop asyncio.
+        messages = await asyncio.to_thread(fetch_unseen_messages)
+        if not messages:
+            return
+        AsyncSessionLocal = get_AsyncSessionLocal()
+        async with AsyncSessionLocal() as session:
+            async with session.begin():
+                await _process_email_batch(session, messages)
+    except Exception as e:
+        log.warning("Poll IMAP failed: %s", e, exc_info=False)
 
 
-async def execute_trigger_with_config(trigger: Trigger) -> None:
+async def execute_trigger_with_config(trigger: MindmapTrigger) -> None:
     """
     Exécute un trigger en utilisant sa configuration (agent ou action).
     
@@ -237,7 +241,7 @@ async def execute_trigger_with_config(trigger: Trigger) -> None:
                     logger.error(f"❌ [Scheduler] Échec de l'envoi d'email d'échéance pour le trigger {trigger.id}")
                 
                 # Mettre à jour last_fired_at
-                trigger_db = await async_session.get(Trigger, trigger.id)
+                trigger_db = await async_session.get(MindmapTrigger, trigger.id)
                 if trigger_db:
                     trigger_db.last_fired_at = datetime.now(tz=timezone.utc).isoformat()
                 
@@ -334,8 +338,8 @@ async def execute_trigger_with_config(trigger: Trigger) -> None:
                 async with async_session.begin():
                     await execute_actions_for_node(
                         session=async_session,
-                        node_id=str(trigger.node_id),
-                        trigger_id=str(trigger.id),
+                        node_id=trigger.node_id,
+                        trigger_id=trigger.id,
                     )
             logger.info(f"✅ [Scheduler] Actions exécutées pour le trigger {trigger.id}")
         
@@ -344,7 +348,7 @@ async def execute_trigger_with_config(trigger: Trigger) -> None:
         AsyncSessionLocal = get_AsyncSessionLocal()
         async with AsyncSessionLocal() as async_session:
             async with async_session.begin():
-                trigger_db = await async_session.get(Trigger, trigger.id)
+                trigger_db = await async_session.get(MindmapTrigger, trigger.id)
                 if trigger_db:
                     trigger_db.last_fired_at = datetime.now(tz=timezone.utc).isoformat()
                     await async_session.commit()
@@ -364,11 +368,13 @@ async def run_due_triggers() -> None:
     AsyncSessionLocal = get_AsyncSessionLocal()
     async with AsyncSessionLocal() as session:
         async with session.begin():
+            # Convertir l'enum PostgreSQL en texte pour la comparaison
+            # La colonne trigger_type est un enum dans la DB mais String dans le modèle
             result = await session.execute(
-                select(Trigger).where(
-                    Trigger.enabled.is_(True),
-                    Trigger.trigger_type == TriggerType.date_reached
-                )
+                select(MindmapTrigger).where(
+                    MindmapTrigger.enabled.is_(True),
+                    text("triggers.trigger_type::text = :trigger_type_val")
+                ).params(trigger_type_val=TriggerType.date_reached.value)
             )
             for trigger in result.scalars().all():
                 run_at = trigger.config.get("run_at")
@@ -456,11 +462,13 @@ async def load_cron_triggers(scheduler: AsyncIOScheduler) -> None:
     AsyncSessionLocal = get_AsyncSessionLocal()
     async with AsyncSessionLocal() as session:
         async with session.begin():
+            # Convertir l'enum PostgreSQL en texte pour la comparaison
+            # La colonne trigger_type est un enum dans la DB mais String dans le modèle
             result = await session.execute(
-                select(Trigger).where(
-                    Trigger.enabled.is_(True),
-                    Trigger.trigger_type == TriggerType.cron
-                )
+                select(MindmapTrigger).where(
+                    MindmapTrigger.enabled.is_(True),
+                    text("triggers.trigger_type::text = :trigger_type_val")
+                ).params(trigger_type_val=TriggerType.cron.value)
             )
             triggers = result.scalars().all()
             
@@ -520,10 +528,15 @@ def start_scheduler() -> AsyncIOScheduler:
     import asyncio
     logger = logging.getLogger(__name__)
     
-    scheduler = AsyncIOScheduler()
+    # Configurer le scheduler avec UTC pour cohérence avec date_reached
+    scheduler = AsyncIOScheduler(timezone="UTC")
     
-    # Job pour poller les emails IMAP
-    scheduler.add_job(poll_imap, "interval", minutes=settings.imap_poll_minutes, id="poll_imap")
+    # Job pour poller les emails IMAP (uniquement si IMAP configuré dans .env)
+    if is_imap_configured():
+        scheduler.add_job(poll_imap, "interval", minutes=settings.imap_poll_minutes, id="poll_imap")
+        logger.info("✅ [Scheduler] Poll IMAP activé (toutes les %d min)", settings.imap_poll_minutes)
+    else:
+        logger.info("⏭️ [Scheduler] Poll IMAP désactivé (IMAP_HOST, IMAP_USER, IMAP_PASSWORD non configurés)")
     
     # Job pour vérifier les triggers date_reached
     scheduler.add_job(run_due_triggers, "interval", minutes=1, id="run_due_triggers")

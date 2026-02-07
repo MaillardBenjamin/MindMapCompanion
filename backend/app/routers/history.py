@@ -134,7 +134,7 @@ async def get_history(
                     ))
                 elif log.action_id:
                     action = db.query(Action).filter(Action.id == log.action_id).first()
-                    action_type = action.type if action else "inconnu"
+                    action_type = (getattr(action, "action_type", None) or getattr(action, "type", None)) if action else "inconnu"
                     
                     items.append(HistoryItemOut(
                         id=f"action_exec_{log.id}",
@@ -260,13 +260,13 @@ async def get_history(
                                 id=f"action_created_{action.id}",
                                 type="action_created",
                                 created_at=action_created_at,
-                                title=f"Action créée: {action.type}",
+                                title=f"Action créée: {getattr(action, 'action_type', None) or getattr(action, 'type', None)}",
                                 description=f"Sur le nœud: {action_node.label if action_node else 'inconnu'}",
                                 node_id=action_node.id if action_node else None,
                                 node_label=action_node.label if action_node else None,
                                 action_id=action.id,
                                 trigger_id=action.trigger_id,
-                                metadata={"action_type": action.type}
+                                metadata={"action_type": getattr(action, 'action_type', None) or getattr(action, 'type', None)}
                             ))
                         except Exception as e:
                             logger.warning(f"Erreur lors du traitement d'une Action {action.id}: {e}")

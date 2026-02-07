@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from datetime import datetime
 from typing import Optional
 
@@ -17,12 +17,11 @@ class UserLogin(BaseModel):
 
 
 class UserResponse(UserBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    
     id: int
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class UserUpdate(BaseModel):

@@ -27,6 +27,15 @@ import { useNotification } from "../../hooks/useNotification";
 
 type TriggerType = "email_received" | "date_reached" | "cron" | "state_changed" | "manual";
 
+interface NodeAction {
+  id: string;
+  node_id: string;
+  action_type: string;
+  mode: string;
+  config: Record<string, any>;
+  enabled: boolean;
+}
+
 interface TriggerFormProps {
   open: boolean;
   nodeId: string;
@@ -48,6 +57,23 @@ const TRIGGER_TYPES: { value: TriggerType; label: string }[] = [
   { value: "manual", label: "Manuel" },
 ];
 
+const parseInputSchemaFromMarkdown = (markdown?: string) => {
+  if (!markdown) return null;
+  try {
+    const sectionMatch = markdown.match(/#\s*Input Schema[\s\S]*?(?=^#\s|\Z)/m);
+    if (!sectionMatch) return null; // Pas de section Input Schema → ne pas utiliser le premier bloc JSON (évite de prendre l'Output Schema)
+    const sectionContent = sectionMatch[0];
+    const jsonMatch =
+      sectionContent.match(/```json\s*([\s\S]*?)```/m) ||
+      sectionContent.match(/```\s*([\s\S]*?)```/m);
+    if (!jsonMatch) return null;
+    return JSON.parse(jsonMatch[1]);
+  } catch (error) {
+    console.warn("[TriggerForm] Impossible de parser l'Input Schema depuis le markdown:", error);
+    return null;
+  }
+};
+
 export default function TriggerForm({
   open,
   nodeId,
@@ -65,11 +91,11 @@ export default function TriggerForm({
   const [selectedAgent, setSelectedAgent] = useState<string>('');
   const [selectedAction, setSelectedAction] = useState<string>('');
   const [inputText, setInputText] = useState('');
-  const [outputType, setOutputType] = useState<'screen' | 'email'>('screen');
+  const [outputType, setOutputType] = useState<'screen' | 'email' | 'audio_tts' | 'audio_email'>('screen');
   const [emailTo, setEmailTo] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
   const [availableAgents, setAvailableAgents] = useState<ConfigurableAgentResponse[]>([]);
-  const [availableActions, setAvailableActions] = useState<ActionResponse[]>([]);
+  const [availableActions, setAvailableActions] = useState<NodeAction[]>([]);
   const [agentOptions, setAgentOptions] = useState<Record<string, any>>({});
 
   // Charger les agents et actions disponibles
@@ -79,6 +105,72 @@ export default function TriggerForm({
       loadAvailableActions();
     }
   }, [open, nodeId]);
+
+  // Valider que les valeurs sélectionnées existent dans les options disponibles
+  // IMPORTANT: Ne valider que si les options sont déjà chargées pour éviter les faux positifs
+  useEffect(() => {
+    // Ne pas valider si les options ne sont pas encore chargées
+    const agentsLoaded = availableAgents.length > 0 || (taskType === 'agent' && selectedAgent === '');
+    const actionsLoaded = availableActions.length > 0 || (taskType === 'action' && selectedAction === '');
+    
+    // Si on attend des agents mais qu'ils ne sont pas encore chargés, attendre
+    if (taskType === 'agent' && selectedAgent && !agentsLoaded) {
+      console.log('[TriggerForm] Agents pas encore chargés, validation différée');
+      return;
+    }
+    
+    // Si on attend des actions mais qu'elles ne sont pas encore chargées, attendre
+    if (taskType === 'action' && selectedAction && !actionsLoaded) {
+      console.log('[TriggerForm] Actions pas encore chargées, validation différée');
+      return;
+    }
+    
+    console.log('[TriggerForm] Validation des valeurs sélectionnées:', {
+      taskType,
+      selectedAgent,
+      selectedAgentType: typeof selectedAgent,
+      selectedAction,
+      selectedActionType: typeof selectedAction,
+      availableAgentsCount: availableAgents.length,
+      availableActionsCount: availableActions.length,
+      agentsLoaded,
+      actionsLoaded
+    });
+    
+    if (taskType === 'agent' && selectedAgent && agentsLoaded) {
+      const agentExists = availableAgents.some(a => String(a.id) === String(selectedAgent));
+      console.log(`[TriggerForm] Vérification agent ID ${selectedAgent}:`, {
+        agentExists,
+        availableAgentIds: availableAgents.map(a => ({ id: a.id, idString: String(a.id) }))
+      });
+      if (!agentExists) {
+        // L'agent n'existe plus ou n'est plus disponible, réinitialiser silencieusement
+        console.warn(`[TriggerForm] ⚠️ Agent avec ID ${selectedAgent} non trouvé dans les options disponibles, réinitialisation`);
+        setSelectedAgent('');
+        setConfig({ ...config, selected_agent: undefined });
+      } else {
+        console.log(`[TriggerForm] ✅ Agent avec ID ${selectedAgent} trouvé dans les options disponibles`);
+      }
+    } else if (taskType === 'action' && selectedAction && actionsLoaded) {
+      const actionExists = availableActions.some(a => String(a.id) === String(selectedAction));
+      console.log(`[TriggerForm] Vérification action ID ${selectedAction}:`, {
+        actionExists,
+        selectedActionType: typeof selectedAction,
+        selectedActionString: String(selectedAction),
+        availableActionIds: availableActions.map(a => ({ id: a.id, idType: typeof a.id, idString: String(a.id) }))
+      });
+      if (!actionExists && selectedAction !== '__create_draft_email__') {
+        // L'action n'existe plus ou n'est plus liée à ce nœud, réinitialiser silencieusement
+        console.warn(`[TriggerForm] ⚠️ Action avec ID ${selectedAction} (type: ${typeof selectedAction}) non trouvée dans les options disponibles, réinitialisation`);
+        setSelectedAction('');
+        setConfig({ ...config, selected_action: undefined });
+      } else if (actionExists) {
+        console.log(`[TriggerForm] ✅ Action avec ID ${selectedAction} trouvée dans les options disponibles`);
+      } else if (selectedAction === '__create_draft_email__') {
+        console.log(`[TriggerForm] ✅ Action spéciale __create_draft_email__ détectée`);
+      }
+    }
+  }, [availableAgents, availableActions, taskType, selectedAgent, selectedAction]);
 
   const loadAvailableAgents = async () => {
     try {
@@ -103,14 +195,24 @@ export default function TriggerForm({
 
   const loadAvailableActions = async () => {
     try {
-      // Charger les actions du nœud (pour les actions de type "reminder")
+      // Charger toutes les actions du nœud
       const { listActions } = await import("../../api/client");
       const response = await listActions(nodeId);
       const nodeActions = response.actions || [];
       
-      // Filtrer pour ne garder que les actions de type "reminder"
-      const reminderActions = nodeActions.filter((action: any) => action.action_type === "reminder");
-      setAvailableActions(reminderActions);
+      console.log('[TriggerForm] Actions chargées:', nodeActions);
+      console.log('[TriggerForm] Nombre d\'actions:', nodeActions.length);
+      console.log('[TriggerForm] Détails des actions chargées:', nodeActions.map(a => ({
+        id: a.id,
+        idType: typeof a.id,
+        idString: String(a.id),
+        node_id: a.node_id,
+        action_type: a.action_type,
+        name: a.name
+      })));
+      
+      // Charger toutes les actions disponibles (pas seulement "reminder")
+      setAvailableActions(nodeActions);
     } catch (error) {
       console.error('Erreur lors du chargement des actions:', error);
       setAvailableActions([]);
@@ -118,26 +220,43 @@ export default function TriggerForm({
   };
 
   // Fonction pour générer l'expression cron à partir des paramètres
+  // Convertit l'heure locale sélectionnée en UTC pour cohérence avec date_reached
   const generateCronExpression = (updatedConfig: Record<string, any>) => {
     const days = updatedConfig.cron_days || [];
-    const hour = updatedConfig.cron_hour ?? 9;
-    const minute = updatedConfig.cron_minute ?? 0;
+    const localHour = updatedConfig.cron_hour ?? 9;
+    const localMinute = updatedConfig.cron_minute ?? 0;
+    
+    // Convertir l'heure locale en UTC pour le cron
+    // Créer une date avec l'heure locale sélectionnée (aujourd'hui, pour la conversion)
+    const today = new Date();
+    const localDate = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      localHour,
+      localMinute
+    );
+    
+    // Convertir en UTC
+    const utcHour = localDate.getUTCHours();
+    const utcMinute = localDate.getUTCMinutes();
     
     let cronExpr: string;
     
     if (days.length === 0 || days.length === 7) {
       // Si aucun jour n'est sélectionné ou tous les jours, utiliser *
-      cronExpr = `${minute} ${hour} * * *`;
+      cronExpr = `${utcMinute} ${utcHour} * * *`;
     } else {
       // Jours spécifiques (0 = dimanche, 6 = samedi).
       // NOTE: cette convention est alignée avec le backend (APScheduler) et les expressions cron standard.
       // Toute évolution UI (ex: afficher Lundi=1) doit conserver ce mapping, sinon on introduit des décalages.
       const daysStr = days.sort((a: number, b: number) => a - b).join(',');
-      cronExpr = `${minute} ${hour} * * ${daysStr}`;
+      cronExpr = `${utcMinute} ${utcHour} * * ${daysStr}`;
     }
     
     // Source de vérité persistée : `cron_expression`.
-    // Les champs UI (cron_hour/cron_minute/cron_days) ne sont que des helpers pour l'édition.
+    // Les champs UI (cron_hour/cron_minute/cron_days) sont en heure locale pour l'utilisateur.
+    // L'expression cron est en UTC pour cohérence avec date_reached.
     setConfig({ ...updatedConfig, cron_expression: cronExpr });
   };
 
@@ -152,12 +271,24 @@ export default function TriggerForm({
       // essayer de parser l'expression pour remplir les champs
       if (trigger.trigger_type === 'cron' && triggerConfig.cron_expression && 
           (!triggerConfig.cron_days && triggerConfig.cron_hour === undefined && triggerConfig.cron_minute === undefined)) {
-        // Parser l'expression cron basique: "minute heure * * jours"
+        // Parser l'expression cron basique: "minute heure * * jours" (en UTC)
         const cronParts = triggerConfig.cron_expression.split(' ');
         if (cronParts.length >= 5) {
-          const minute = parseInt(cronParts[0]) || 0;
-          const hour = parseInt(cronParts[1]) || 9;
+          const utcMinute = parseInt(cronParts[0]) || 0;
+          const utcHour = parseInt(cronParts[1]) || 9;
           const daysPart = cronParts[4];
+          
+          // Convertir l'heure UTC en heure locale pour l'affichage
+          const today = new Date();
+          const utcDate = new Date(Date.UTC(
+            today.getUTCFullYear(),
+            today.getUTCMonth(),
+            today.getUTCDate(),
+            utcHour,
+            utcMinute
+          ));
+          const localHour = utcDate.getHours();
+          const localMinute = utcDate.getMinutes();
           
           let days: number[] = [];
           if (daysPart === '*') {
@@ -179,8 +310,8 @@ export default function TriggerForm({
             });
           }
           
-          triggerConfig.cron_minute = minute;
-          triggerConfig.cron_hour = hour;
+          triggerConfig.cron_minute = localMinute;
+          triggerConfig.cron_hour = localHour;
           triggerConfig.cron_days = days;
           setConfig(triggerConfig);
         }
@@ -195,8 +326,19 @@ export default function TriggerForm({
       
       // Restaurer les valeurs de configuration d'exécution
       setTaskType(triggerConfig.task_type || 'agent');
-      setSelectedAgent(triggerConfig.selected_agent || '');
-      setSelectedAction(triggerConfig.selected_action || '');
+      const restoredAgent = triggerConfig.selected_agent ? String(triggerConfig.selected_agent) : '';
+      const restoredAction = triggerConfig.selected_action ? String(triggerConfig.selected_action) : '';
+      console.log('[TriggerForm] Restauration depuis trigger config:', {
+        task_type: triggerConfig.task_type,
+        selected_agent: triggerConfig.selected_agent,
+        selected_agent_type: typeof triggerConfig.selected_agent,
+        restored_agent: restoredAgent,
+        selected_action: triggerConfig.selected_action,
+        selected_action_type: typeof triggerConfig.selected_action,
+        restored_action: restoredAction
+      });
+      setSelectedAgent(restoredAgent);
+      setSelectedAction(restoredAction);
       setInputText(triggerConfig.input_text || '');
       setOutputType(triggerConfig.output_type || 'screen');
       setEmailTo(triggerConfig.email_to || '');
@@ -221,14 +363,20 @@ export default function TriggerForm({
   const getConfigFields = () => {
     switch (triggerType) {
       case "date_reached":
-        // Convertir la date ISO en format datetime-local si elle existe
+        // Convertir la date ISO (UTC) en format datetime-local (heure locale) pour l'affichage
         let dateValue = "";
         if (config.run_at) {
           try {
             const date = new Date(config.run_at);
             if (!isNaN(date.getTime())) {
+              // Convertir la date UTC en heure locale pour l'affichage
               // Format: YYYY-MM-DDTHH:mm pour datetime-local
-              dateValue = date.toISOString().slice(0, 16);
+              const year = date.getFullYear();
+              const month = String(date.getMonth() + 1).padStart(2, '0');
+              const day = String(date.getDate()).padStart(2, '0');
+              const hours = String(date.getHours()).padStart(2, '0');
+              const minutes = String(date.getMinutes()).padStart(2, '0');
+              dateValue = `${year}-${month}-${day}T${hours}:${minutes}`;
             }
           } catch (e) {
             console.error("Erreur lors de la conversion de la date:", e);
@@ -242,11 +390,20 @@ export default function TriggerForm({
               type="datetime-local"
               value={dateValue}
               onChange={(e) => {
-                // Convertir en format ISO pour le backend
+                // Convertir la date/heure locale sélectionnée en UTC pour le backend
                 const localDate = e.target.value;
                 if (localDate) {
-                  const isoDate = new Date(localDate).toISOString();
-                  setConfig({ ...config, run_at: isoDate });
+                  // Créer une date à partir de la valeur locale (interprétée comme heure locale)
+                  // puis convertir en ISO string (UTC)
+                  const localDateTime = new Date(localDate);
+                  // Vérifier que la date est valide
+                  if (!isNaN(localDateTime.getTime())) {
+                    const isoDate = localDateTime.toISOString();
+                    setConfig({ ...config, run_at: isoDate });
+                  } else {
+                    console.error("Date invalide:", localDate);
+                    setConfig({ ...config, run_at: undefined });
+                  }
                 } else {
                   setConfig({ ...config, run_at: undefined });
                 }
@@ -358,7 +515,7 @@ export default function TriggerForm({
                 label="Expression Cron (générée automatiquement)"
                 value={config.cron_expression || ""}
                 InputProps={{ readOnly: true }}
-                helperText="Cette expression est générée automatiquement à partir de vos sélections"
+                helperText="Cette expression est générée automatiquement à partir de vos sélections. L'heure est convertie en UTC pour cohérence avec les triggers de type 'Date atteinte'."
                 sx={{ mt: 1 }}
               />
               
@@ -476,8 +633,8 @@ export default function TriggerForm({
       input_text: inputText || undefined,
       agent_options: taskType === 'agent' && Object.keys(agentOptions).length > 0 ? agentOptions : undefined,
       output_type: outputType,
-      email_to: outputType === 'email' ? emailTo : undefined,
-      email_subject: outputType === 'email' ? emailSubject : undefined,
+      email_to: (outputType === 'email' || outputType === 'audio_email') ? emailTo : undefined,
+      email_subject: (outputType === 'email' || outputType === 'audio_email') ? emailSubject : undefined,
     };
     
     const { createTrigger, updateTrigger } = await import("../../api/client");
@@ -590,15 +747,41 @@ export default function TriggerForm({
             {taskType === 'agent' ? 'Sélectionner un agent' : 'Sélectionner une action'}
           </InputLabel>
           <Select
-            value={taskType === 'agent' ? selectedAgent : selectedAction}
+            value={
+              taskType === 'agent' 
+                ? (availableAgents.some(a => String(a.id) === String(selectedAgent)) ? String(selectedAgent) : '')
+                : (availableActions.some(a => String(a.id) === String(selectedAction)) || selectedAction === '__create_draft_email__' ? String(selectedAction) : '')
+            }
             label={taskType === 'agent' ? 'Sélectionner un agent' : 'Sélectionner une action'}
-            onChange={(e) => {
+            onChange={async (e) => {
               if (taskType === 'agent') {
                 setSelectedAgent(e.target.value);
                 setConfig({ ...config, selected_agent: e.target.value, task_type: 'agent' });
                 // Réinitialiser les options de l'agent quand on change d'agent
                 setAgentOptions({});
               } else {
+                // Si l'utilisateur sélectionne l'option de création
+                if (e.target.value === "__create_draft_email__") {
+                  try {
+                    const { createAction } = await import("../../api/client");
+                    const newAction = await createAction({
+                      node_id: nodeId,
+                      action_type: "draft_email",
+                      mode: "auto",
+                      config: {},
+                      enabled: true,
+                    });
+                    showSuccess("Action 'Préparer l'email' créée avec succès");
+                    await loadAvailableActions();
+                    // Sélectionner automatiquement la nouvelle action
+                    setSelectedAction(String(newAction.id));
+                    setConfig({ ...config, selected_action: String(newAction.id), task_type: 'action' });
+                  } catch (error: any) {
+                    console.error('Erreur lors de la création de l\'action:', error);
+                    showError("Erreur lors de la création de l'action 'Préparer l'email'");
+                  }
+                  return;
+                }
                 setSelectedAction(e.target.value);
                 setConfig({ ...config, selected_action: e.target.value, task_type: 'action' });
               }
@@ -636,62 +819,57 @@ export default function TriggerForm({
                 </MenuItem>
               )
             ) : (
-              <>
-                {availableActions.length > 0 ? (
-                  availableActions.map((action: any) => (
-                    <MenuItem key={action.id} value={String(action.id)}>
-                      <Box>
-                        <Typography variant="body2" fontWeight={500}>
-                          {action.action_type === "reminder" ? "Rappel" : action.action_type}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {action.action_type === "reminder" ? "Formate le mail d'échéance" : action.action_type}
-                        </Typography>
-                      </Box>
-                    </MenuItem>
-                  ))
-                ) : (
-                  <MenuItem disabled value="">
-                    <Typography variant="body2" color="text.secondary">
-                      Aucune action "Rappel" disponible
-                    </Typography>
+              (() => {
+                // Mapper les types d'actions à des labels lisibles
+                const actionLabels: Record<string, string> = {
+                  reminder: "Rappel",
+                  draft_email: "Préparer l'email",
+                  send_email: "Envoyer l'email",
+                  call_api: "Appel API",
+                  update_node: "Mettre à jour le nœud",
+                  run_agent: "Exécuter un agent",
+                  notify: "Notification",
+                  create_reminder: "Créer un rappel",
+                };
+                
+                const actionDescriptions: Record<string, string> = {
+                  reminder: "Formate le mail d'échéance",
+                  draft_email: "Prépare un email à partir du nœud",
+                  send_email: "Envoie un email",
+                  call_api: "Appelle une API externe",
+                  update_node: "Met à jour les propriétés du nœud",
+                  run_agent: "Exécute un agent configuré",
+                  notify: "Envoie une notification",
+                  create_reminder: "Crée un rappel",
+                };
+                
+                const actionMenuItems = availableActions.map((action) => (
+                  <MenuItem key={action.id} value={String(action.id)}>
+                    <Box>
+                      <Typography variant="body2" fontWeight={500}>
+                        {actionLabels[action.action_type] || action.action_type}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {actionDescriptions[action.action_type] || action.action_type}
+                      </Typography>
+                    </Box>
                   </MenuItem>
-                )}
-                {/* Option pour créer une action "reminder" si elle n'existe pas */}
-                {availableActions.length === 0 && (
-                  <Box sx={{ mt: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                      Aucune action "Rappel" n'existe pour ce nœud.
-                    </Typography>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={async () => {
-                        try {
-                          const { createAction } = await import("../../api/client");
-                          const newAction = await createAction({
-                            node_id: nodeId,
-                            action_type: "reminder",
-                            mode: "auto",
-                            config: {},
-                            enabled: true,
-                          });
-                          showSuccess("Action 'Rappel' créée avec succès");
-                          await loadAvailableActions();
-                          // Sélectionner automatiquement la nouvelle action
-                          setSelectedAction(String(newAction.id));
-                          setConfig({ ...config, selected_action: String(newAction.id), task_type: 'action' });
-                        } catch (error: any) {
-                          console.error('Erreur lors de la création de l\'action:', error);
-                          showError("Erreur lors de la création de l'action 'Rappel'");
-                        }
-                      }}
-                    >
-                      Créer une action "Rappel"
-                    </Button>
-                  </Box>
-                )}
-              </>
+                ));
+                
+                return [
+                  ...actionMenuItems,
+                  <MenuItem key="__create_draft_email__" value="__create_draft_email__">
+                    <Box>
+                      <Typography variant="body2" fontWeight={500} sx={{ fontStyle: 'italic' }}>
+                        + Créer une action "Préparer l'email"
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Crée une nouvelle action pour préparer le texte de l'email
+                      </Typography>
+                    </Box>
+                  </MenuItem>
+                ];
+              })()
             )}
           </Select>
           {taskType === 'agent' && availableAgents.length === 0 && (
@@ -725,7 +903,10 @@ export default function TriggerForm({
           console.log('[TriggerForm] Données de l\'agent:', selectedAgentData);
           console.log('[TriggerForm] input_schema:', selectedAgentData?.input_schema);
           
-          const hasInputSchema = selectedAgentData?.input_schema && Object.keys(selectedAgentData.input_schema).length > 0;
+          const resolvedInputSchema =
+            selectedAgentData?.input_schema ||
+            parseInputSchemaFromMarkdown(selectedAgentData?.markdown_config);
+          const hasInputSchema = resolvedInputSchema && Object.keys(resolvedInputSchema).length > 0;
           console.log('[TriggerForm] hasInputSchema:', hasInputSchema);
           
           if (hasInputSchema) {
@@ -735,7 +916,7 @@ export default function TriggerForm({
                 <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                   Paramètres de l'agent
                 </Typography>
-                {Object.entries(selectedAgentData.input_schema).map(([key, field]: [string, any]) => {
+                {Object.entries(resolvedInputSchema as Record<string, any>).map(([key, field]: [string, any]) => {
                   const fieldValue = agentOptions[key] || "";
                   const isRequired = field.required === true;
 
@@ -836,17 +1017,19 @@ export default function TriggerForm({
             row
             value={outputType}
             onChange={(e) => {
-              setOutputType(e.target.value as 'screen' | 'email');
+              setOutputType(e.target.value as 'screen' | 'email' | 'audio_tts' | 'audio_email');
               setConfig({ ...config, output_type: e.target.value });
             }}
           >
             <FormControlLabel value="screen" control={<Radio />} label="À l'écran" />
             <FormControlLabel value="email" control={<Radio />} label="Par email" />
+            <FormControlLabel value="audio_tts" control={<Radio />} label="Audio (TTS)" />
+            <FormControlLabel value="audio_email" control={<Radio />} label="Audio par email" />
           </RadioGroup>
         </FormControl>
 
-        {/* Configuration email */}
-        {outputType === 'email' && (
+        {/* Configuration email (Par email ou Audio par email) */}
+        {(outputType === 'email' || outputType === 'audio_email') && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2, bgcolor: 'action.hover', borderRadius: 1, mt: 2 }}>
             <TextField
               fullWidth

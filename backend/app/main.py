@@ -4,12 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import OperationalError, ProgrammingError
-from app.api.routes import auth, users, mindmaps, nodes, triggers, actions
+from app.api.routes import auth, users, mindmaps, nodes, triggers, actions, weather
 from app.routers import agents
 from app.routers import configurable_agents
 from app.routers import admin
 from app.routers import history
 from app.routers import settings as settings_router
+from app.routers import actions as actions_router
 from app.mcp.web_search_server import router as web_search_mcp_router
 from app.config import settings
 from app.services.scheduler import start_scheduler
@@ -91,7 +92,9 @@ app.include_router(users.router)
 app.include_router(mindmaps.router)
 app.include_router(nodes.router)
 app.include_router(triggers.router)
-app.include_router(actions.router)
+app.include_router(weather.router)
+app.include_router(actions.router)  # Actions liées aux triggers (ancien système)
+app.include_router(actions_router.router)  # Actions liées aux nœuds (nouveau système)
 app.include_router(agents.router, prefix="/api")
 app.include_router(configurable_agents.router, prefix="/api")
 app.include_router(admin.router)

@@ -21,24 +21,62 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useMindmapStore } from '../../stores/mindmapStore';
 import { useNotification } from '../../hooks/useNotification';
 
+const STORAGE_KEY_POSITION = 'assistant-ia-position';
+const STORAGE_KEY_EXPANDED = 'assistant-ia-expanded';
+
 const TextInput = () => {
   const [text, setText] = useState('');
-  const [isExpanded, setIsExpanded] = useState(true);
-  const [position, setPosition] = useState({ x: 0, y: 16 });
+  const [isExpanded, setIsExpanded] = useState(() => {
+    // Charger l'état depuis le localStorage
+    const saved = localStorage.getItem(STORAGE_KEY_EXPANDED);
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [position, setPosition] = useState(() => {
+    // Charger la position depuis le localStorage
+    const saved = localStorage.getItem(STORAGE_KEY_POSITION);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          return { x: parsed.x, y: parsed.y };
+        }
+      } catch (e) {
+        console.warn('Erreur lors du chargement de la position sauvegardée:', e);
+      }
+    }
+    return { x: 0, y: 16 };
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const positionRef = useRef(position);
   const { processText, reorganizeMindmapWithAI, isProcessing, currentMindmap, nodes } = useMindmapStore();
   const { showSuccess, showError, showInfo } = useNotification();
 
-  // Initialiser la position en haut à droite
+  // Mettre à jour la ref quand la position change
   useEffect(() => {
-    const updatePosition = () => {
+    positionRef.current = position;
+  }, [position]);
+
+  // Sauvegarder l'état expanded dans le localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_EXPANDED, String(isExpanded));
+  }, [isExpanded]);
+
+  // Sauvegarder la position dans le localStorage quand elle change
+  useEffect(() => {
+    if (position.x !== 0 || position.y !== 16) {
+      localStorage.setItem(STORAGE_KEY_POSITION, JSON.stringify(position));
+    }
+  }, [position]);
+
+  // Valider et ajuster la position sauvegardée au montage et lors du redimensionnement
+  useEffect(() => {
+    const validateAndAdjustPosition = () => {
       if (containerRef.current) {
         // Essayer d'obtenir le conteneur parent
         let parent: HTMLElement | null = containerRef.current.offsetParent as HTMLElement;
         
-        // Si offsetParent n'est pas disponible, chercher le parent avec position relative/absolute
         if (!parent || parent === document.body) {
           let current = containerRef.current.parentElement;
           while (current && current !== document.body) {
@@ -51,31 +89,66 @@ const TextInput = () => {
           }
         }
         
+        // Utiliser la ref pour obtenir la position actuelle sans créer de dépendance
+        const currentPos = positionRef.current;
+        
         if (parent) {
           const containerWidth = parent.clientWidth;
+          const containerHeight = parent.clientHeight;
           const panelWidth = 420;
-          const newX = containerWidth - panelWidth - 16;
-          setPosition({ x: Math.max(16, newX), y: 16 });
+          const panelHeight = containerRef.current.offsetHeight || 200; // Estimation si pas encore rendu
+          
+          // Si la position est la position par défaut (0, 16), calculer une position initiale
+          if (currentPos.x === 0 && currentPos.y === 16) {
+            const newX = containerWidth - panelWidth - 16;
+            setPosition({ x: Math.max(16, newX), y: 16 });
+          } else {
+            // Valider que la position sauvegardée est dans les limites
+            const maxX = containerWidth - panelWidth - 16;
+            const maxY = containerHeight - panelHeight - 16;
+            const adjustedX = Math.max(16, Math.min(maxX, currentPos.x));
+            const adjustedY = Math.max(16, Math.min(maxY, currentPos.y));
+            
+            if (adjustedX !== currentPos.x || adjustedY !== currentPos.y) {
+              setPosition({ x: adjustedX, y: adjustedY });
+            }
+          }
         } else {
           // Fallback : utiliser la largeur de la fenêtre moins une estimation du drawer
           const estimatedDrawerWidth = 260;
           const containerWidth = window.innerWidth - estimatedDrawerWidth;
+          const containerHeight = window.innerHeight;
           const panelWidth = 420;
-          setPosition({ x: Math.max(16, containerWidth - panelWidth - 16), y: 16 });
+          const panelHeight = containerRef.current.offsetHeight || 200;
+          
+          if (currentPos.x === 0 && currentPos.y === 16) {
+            setPosition({ x: Math.max(16, containerWidth - panelWidth - 16), y: 16 });
+          } else {
+            // Valider que la position sauvegardée est dans les limites
+            const maxX = containerWidth - panelWidth - 16;
+            const maxY = containerHeight - panelHeight - 16;
+            const adjustedX = Math.max(16, Math.min(maxX, currentPos.x));
+            const adjustedY = Math.max(16, Math.min(maxY, currentPos.y));
+            
+            if (adjustedX !== currentPos.x || adjustedY !== currentPos.y) {
+              setPosition({ x: adjustedX, y: adjustedY });
+            }
+          }
         }
       }
     };
     
     // Initialiser après un court délai pour que le DOM soit prêt
-    const timer = setTimeout(updatePosition, 100);
+    const timer = setTimeout(validateAndAdjustPosition, 100);
     
     // Mettre à jour si la fenêtre est redimensionnée
-    window.addEventListener('resize', updatePosition);
+    window.addEventListener('resize', validateAndAdjustPosition);
+    
     return () => {
       clearTimeout(timer);
-      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('resize', validateAndAdjustPosition);
     };
-  }, []);
+  }, []); // Exécuter seulement au montage
 
   // Gérer le drag
   useEffect(() => {

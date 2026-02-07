@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
+from app.core.agno_model import get_agno_chat_model
 from app.core.config import get_settings
 
 
@@ -29,11 +30,8 @@ class AgentBase(ABC):
         self.agent = self._create_agent()
     
     def _create_model(self) -> OpenAIChat:
-        """Crée le modèle OpenAI"""
-        return OpenAIChat(
-            id=self.settings.agno_model,
-            api_key=self.settings.agno_api_key,
-        )
+        """Crée le modèle de chat (Ollama ou OpenAI selon la config)."""
+        return get_agno_chat_model()
     
     @abstractmethod
     def _create_agent(self) -> Agent:

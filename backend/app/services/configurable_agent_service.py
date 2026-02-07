@@ -4,13 +4,19 @@ Service pour charger et exécuter les agents configurables.
 
 import json
 import logging
+import re
+from urllib.parse import quote_plus
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 
 from agno.agent import Agent
-from agno.models.openai import OpenAIChat
 
+# Uniquement Cadre Emploi pour l'instant.
+DEFAULT_SCRAPER_PATHS = [
+    "scrapers/cadre-emploi-scraper.md",
+]
+from app.core.agno_model import get_agno_chat_model
 from app.core.config import get_settings
 from app.models.configurable_agent import ConfigurableAgent, AgentExecutionLog
 from app.services.agent_config_parser import AgentConfigParser
@@ -99,6 +105,31 @@ class ConfigurableAgentService:
         """
         self.settings = get_settings()
         self.parser = AgentConfigParser()
+
+    def _scraper_paths_from_markdown(self, markdown_config: Optional[str]) -> List[str]:
+        """Extrait les chemins des scrapers depuis le frontmatter du markdown (pas config.tools).
+        Limité à Cadre Emploi uniquement pour l'instant."""
+        if not markdown_config:
+            return list(DEFAULT_SCRAPER_PATHS)
+        try:
+            parsed = self.parser.parse_markdown(markdown_config)
+            raw = parsed.get("scrapers") or []
+            paths = []
+            for p in raw:
+                if isinstance(p, str) and p.strip():
+                    path = p.strip()
+                elif isinstance(p, dict) and p.get("enabled", True):
+                    path = (p.get("path") or "").strip()
+                else:
+                    continue
+                if path and "cadre-emploi" in path:
+                    paths.append(path)
+            if paths:
+                logger.info("[ConfigurableAgent] 📂 Scrapers (Cadre Emploi uniquement): %s", paths)
+                return paths
+        except Exception as e:
+            logger.warning("[ConfigurableAgent] Impossible d'extraire scrapers du markdown: %s", e)
+        return list(DEFAULT_SCRAPER_PATHS)
     
     def _create_agent(self, config: ConfigurableAgent) -> Agent:
         """
@@ -119,10 +150,7 @@ class ConfigurableAgentService:
             Les outils de recherche web (DuckDuckGo) sont automatiquement
             ajoutés si demandés dans config.tools.
         """
-        model = OpenAIChat(
-            id=self.settings.agno_model,
-            api_key=self.settings.agno_api_key or self.settings.openai_api_key,
-        )
+        model = get_agno_chat_model()
         
         # Construire les instructions
         instructions_parts = []
@@ -167,11 +195,41 @@ class ConfigurableAgentService:
             
             if has_web_search:
                 try:
+                    import json
                     from agno.tools.duckduckgo import DuckDuckGoTools
-                    # DuckDuckGoTools fournit: duckduckgo_search et duckduckgo_news
-                    duckduckgo_toolkit = DuckDuckGoTools()
+                    try:
+                        from ddgs.exceptions import DDGSException
+                    except ImportError:
+                        DDGSException = Exception  # fallback si ddgs n'expose pas l'exception
+
+                    class DuckDuckGoToolsResilient(DuckDuckGoTools):
+                        """Sous-classe d'Agno DuckDuckGoTools qui intercepte DDGSException (No results found) pour ne pas faire échouer l'agent."""
+
+                        def duckduckgo_search(self, query: str, max_results: int = 5) -> str:
+                            try:
+                                return super().duckduckgo_search(query=query, max_results=max_results)
+                            except DDGSException as e:
+                                logger.warning("[ConfigurableAgent] DuckDuckGo search: %s", e)
+                                return json.dumps(
+                                    [{"title": "Aucun résultat", "body": "DuckDuckGo n'a pas retourné de résultats pour cette requête. Reformule ou continue sans."}],
+                                    indent=2,
+                                    ensure_ascii=False,
+                                )
+
+                        def duckduckgo_news(self, query: str, max_results: int = 5) -> str:
+                            try:
+                                return super().duckduckgo_news(query=query, max_results=max_results)
+                            except DDGSException as e:
+                                logger.warning("[ConfigurableAgent] DuckDuckGo news: %s", e)
+                                return json.dumps(
+                                    [{"title": "Aucun résultat", "body": "DuckDuckGo n'a pas retourné d'actualités pour cette requête. Reformule ou continue sans."}],
+                                    indent=2,
+                                    ensure_ascii=False,
+                                )
+
+                    duckduckgo_toolkit = DuckDuckGoToolsResilient()
                     agno_tools.append(duckduckgo_toolkit)
-                    logger.info(f"[ConfigurableAgent] ✅ Outil DuckDuckGoTools configuré")
+                    logger.info(f"[ConfigurableAgent] ✅ Outil DuckDuckGoTools (Agno) configuré")
                     logger.info(f"[ConfigurableAgent]   - duckduckgo_search: activé")
                     logger.info(f"[ConfigurableAgent]   - duckduckgo_news: activé")
                 except ImportError as e:
@@ -179,6 +237,21 @@ class ConfigurableAgentService:
                     logger.error(f"[ConfigurableAgent] Installation requise: pip install ddgs")
                 except Exception as e:
                     logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de DuckDuckGoTools: {e}", exc_info=True)
+
+            # Vérifier si des outils météo sont demandés
+            weather_tools = ["weather", "meteo", "get_weather_forecast"]
+            has_weather = any(tool in weather_tools for tool in normalized_tools)
+            if has_weather:
+                try:
+                    from app.tools.weather_tools import WeatherTools
+                    weather_toolkit = WeatherTools()
+                    agno_tools.append(weather_toolkit)
+                    logger.info(f"[ConfigurableAgent] ✅ Outil WeatherTools configuré")
+                    logger.info(f"[ConfigurableAgent]   - get_weather_forecast: activé")
+                except ImportError as e:
+                    logger.error(f"[ConfigurableAgent] ❌ WeatherTools non disponible: {e}")
+                except Exception as e:
+                    logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de WeatherTools: {e}", exc_info=True)
             
             # Vérifier si des outils de scraping d'offres d'emploi sont demandés
             job_scraping_tools = ["scrape_job_offers", "job_scraping", "list_saved_offers", "send_job_matching_email"]
@@ -187,15 +260,12 @@ class ConfigurableAgentService:
             if has_job_scraping:
                 try:
                     from app.tools.job_scraping_tools import JobScrapingTools
-                    # Passer la config de l'agent pour avoir accès aux scrapers et storage configurés
+                    paths = self._scraper_paths_from_markdown(config.markdown_config)
+                    parsed = self.parser.parse_markdown(config.markdown_config) if config.markdown_config else {}
                     agent_config_dict = {
-                        "scrapers": config.tools,  # Les scrapers seront extraits du frontmatter
-                        "storage": getattr(config, "storage", None),
+                        "scrapers": paths,
+                        "storage": parsed.get("storage") or getattr(config, "storage", None),
                     }
-                    # Si l'agent a des scrapers configurés dans le frontmatter, les utiliser
-                    if hasattr(config, "_scrapers_config"):
-                        agent_config_dict["scrapers"] = config._scrapers_config
-                    
                     job_scraping_toolkit = JobScrapingTools(agent_config=agent_config_dict)
                     agno_tools.append(job_scraping_toolkit)
                     logger.info(f"[ConfigurableAgent] ✅ Outils JobScrapingTools configurés")
@@ -218,7 +288,7 @@ class ConfigurableAgentService:
                         f"\n🔧 Outils de scraping d'offres d'emploi disponibles et ACTIFS:\n"
                         "IMPORTANT: Tu DOIS utiliser l'outil scrape_job_offers pour obtenir des offres d'emploi réelles.\n"
                         "\nLes outils suivants sont disponibles et fonctionnels:\n"
-                        "- scrape_job_offers: Scrape les offres depuis Cadre Emploi, Indeed, Welcome to the Jungle\n"
+                        "- scrape_job_offers: Scrape les offres depuis Cadre Emploi\n"
                         "  Paramètres: keywords (ex: 'RH', 'Ressources Humaines'), location (ex: 'Paris')\n"
                         "- list_saved_offers: Liste les offres déjà sauvegardées\n"
                         "- send_job_matching_email: Envoie un email avec les résultats du matching\n"
@@ -245,6 +315,20 @@ class ConfigurableAgentService:
                         "3. Utilise ces informations récentes pour construire ta réponse\n"
                         "4. Cite les URLs exactes des sources dans ta réponse JSON\n"
                         "\nLes outils sont automatiquement disponibles - appelle-les AVANT de répondre."
+                    )
+
+                # Instructions pour les outils météo
+                if has_weather:
+                    instructions_parts.append(
+                        "\n🔧 Outil météo disponible et ACTIF:\n"
+                        "IMPORTANT: Tu DOIS utiliser l'outil get_weather_forecast pour obtenir la météo réelle.\n"
+                        "- get_weather_forecast: Donne la météo du jour et de la semaine à venir pour une ville.\n"
+                        "  Paramètre: location (ex: Paris, Lyon, Bordeaux, Londres).\n"
+                        "\nINSTRUCTIONS:\n"
+                        "1. Appelle get_weather_forecast avec la localisation fournie par l'utilisateur (ville ou lieu)\n"
+                        "2. Résume la météo du jour puis les prochains jours de façon claire\n"
+                        "3. Réponds en français, de façon structurée\n"
+                        "\nLes données proviennent d'Open-Meteo (gratuit, sans clé API)."
                     )
             else:
                 # Si aucun outil n'a pu être chargé, mentionner dans les instructions
@@ -541,17 +625,123 @@ class ConfigurableAgentService:
             else:
                 logger.debug(f"[ConfigurableAgent] Prompt template (premiers 500 chars): {agent_config.prompt_template[:500]}")
             
-            # Rendre le prompt avec le texte d'entrée
+            # Rendre le prompt avec le texte d'entrée et les options (exclure input_text des kwargs, déjà passé)
+            logger.info(f"[ConfigurableAgent] 📥 Options reçues (agent_options): keys={list((options or {}).keys())}, raw={options}")
+            opts = {k: v for k, v in (options or {}).items() if k != "input_text"}
+            logger.info(f"[ConfigurableAgent] 📥 Opts pour template (sans input_text): keys={list(opts.keys())}, values={opts}")
             prompt = self.parser.render_prompt(
                 agent_config.prompt_template,
                 input_text,
-                **(options or {}),
+                **opts,
             )
             
-            logger.info(f"[ConfigurableAgent] 📝 Prompt rendu (après remplacement de {{input_text}}): {len(prompt)} caractères")
+            logger.info(f"[ConfigurableAgent] 📝 Prompt rendu: {len(prompt)} caractères")
+            # Extraire et logger la section "Contexte du candidat" pour vérifier les champs dynamiques
+            if "Contexte du candidat" in prompt or "## Contexte" in prompt:
+                ctx_start = prompt.find("Contexte du candidat") if "Contexte du candidat" in prompt else prompt.find("## Contexte")
+                ctx_snippet = prompt[ctx_start:ctx_start + 800] if ctx_start >= 0 else prompt[:800]
+                logger.info(f"[ConfigurableAgent] 📋 Snippet prompt (Contexte / champs dynamiques):\n{ctx_snippet}")
+            else:
+                logger.info(f"[ConfigurableAgent] 📋 Snippet prompt (800 premiers car.):\n{prompt[:800]}")
+            
+            # Pré-scraping des offres pour les agents Job Matcher (le LLM n'appelle pas les tools)
+            norm_tools = []
+            for t in (agent_config.tools or []):
+                m = re.match(r'^`?([a-zA-Z_][a-zA-Z0-9_]*)`?', str(t))
+                norm_tools.append(m.group(1) if m else t)
+            job_scraping_names = ["scrape_job_offers", "job_scraping", "list_saved_offers", "send_job_matching_email"]
+            has_job_scraping = any(x in job_scraping_names for x in norm_tools)
+            if has_job_scraping and opts.get("keywords") and opts.get("location"):
+                try:
+                    from app.services.job_scraping.job_scraping_service import get_job_scraping_service
+                    paths = self._scraper_paths_from_markdown(agent_config.markdown_config)
+                    search_params = {
+                        "keywords": str(opts["keywords"]).strip(),
+                        "location": str(opts["location"]).strip(),
+                    }
+                    if opts.get("job_type"):
+                        # Accept single value or list / comma-separated (ex. "CDI, CDD" ou ["CDI", "Freelance"])
+                        raw = opts["job_type"]
+                        if isinstance(raw, list):
+                            jt_list = [str(x).strip() for x in raw if x]
+                        else:
+                            jt_list = [x.strip() for x in str(raw).split(",") if x.strip()]
+                        if jt_list:
+                            search_params["job_type"] = jt_list[0] if len(jt_list) == 1 else jt_list
+                            # Cadre Emploi : tyc=1 CDI, 2 CDD, 7 Freelance, 8 Stage (cumulables : tyc=7,2,1)
+                            tyc_map = {"cdi": 1, "cdd": 2, "freelance": 7, "stage": 8}
+                            tyc_values = []
+                            for jt in jt_list:
+                                if jt.lower() in tyc_map and tyc_map[jt.lower()] not in tyc_values:
+                                    tyc_values.append(tyc_map[jt.lower()])
+                            if tyc_values:
+                                search_params["tyc"] = ",".join(str(t) for t in tyc_values)
+                    salary_raw = opts.get("salary") or ""
+                    if isinstance(salary_raw, str) and salary_raw.strip():
+                        match = re.search(r"\d+", salary_raw.strip())
+                        if match:
+                            search_params["salary_min"] = int(match.group(), 10)
+                    # Construire les paramètres d'URL Cadre Emploi
+                    # motscles : version URL-encoded des keywords
+                    search_params["motscles"] = quote_plus(search_params["keywords"])
+                    # reg : code région (ex. FR-J pour Île-de-France)
+                    reg = ""
+                    loc = search_params["location"].strip()
+                    if re.match(r"^FR-[A-Z]$", loc, flags=re.IGNORECASE):
+                        reg = loc.upper()
+                    elif "ile de france" in loc.lower() or "île-de-france" in loc.lower() or "ile-de-france" in loc.lower():
+                        reg = "FR-J"
+                    search_params["reg"] = reg
+                    # Garantir la présence des clés utilisées dans le template URL
+                    search_params.setdefault("tyc", "")
+                    if "salary_min" not in search_params:
+                        search_params["salary_min"] = ""
+                    logger.info(
+                        "[ConfigurableAgent] 🚀 Pré-scraping des offres (keywords=%r, location=%r, job_type=%r, salary_min=%s, paths=%s)...",
+                        search_params["keywords"], search_params["location"],
+                        search_params.get("job_type"), search_params.get("salary_min"), paths,
+                    )
+                    svc = get_job_scraping_service()
+                    scrape_results = await svc.scrape_multiple(
+                        config_paths=paths,
+                        search_params=search_params,
+                        save_to_files=True,
+                    )
+                    total_offers = sum(r.offers_count for r in scrape_results.values())
+                    logger.info("[ConfigurableAgent] ✅ Pré-scraping terminé: %d offres", total_offers)
+                    parts = ["\n## Offres scrapées\n"]
+                    for src, r in scrape_results.items():
+                        parts.append(f"- **{src}**: {r.offers_count} offres")
+                    parts.append(f"\n**Total**: {total_offers} offres.\n")
+                    if total_offers == 0:
+                        parts.append("Aucune offre trouvée pour ces critères. Recommande d'élargir keywords ou localisation.\n")
+                    n = 0
+                    max_offers = 30
+                    max_desc = 400
+                    for src, r in scrape_results.items():
+                        for o in r.offers:
+                            if n >= max_offers:
+                                break
+                            raw = (o.description or "").replace("\n", " ").strip()
+                            desc = raw[:max_desc] + ("..." if len(raw) > max_desc else "")
+                            parts.append(f"### {o.title} @ {o.company}")
+                            parts.append(f"- Lieu: {o.location} | [Lien]({o.url})")
+                            if o.salary:
+                                parts.append(f"- Salaire: {o.salary}")
+                            parts.append(f"- {desc}\n")
+                            n += 1
+                        if n >= max_offers:
+                            break
+                    if total_offers > 0 and n < total_offers:
+                        parts.append(f"*… et {total_offers - n} autres offres.*\n")
+                    inject = "\n".join(parts)
+                    prompt = prompt + inject
+                    logger.info("[ConfigurableAgent] 📋 %d offres injectées dans le prompt", n)
+                except Exception as e:
+                    logger.exception("[ConfigurableAgent] ❌ Pré-scraping échoué: %s", e)
+                    prompt = prompt + "\n\n**Note**: Le scraping des offres a échoué (" + str(e) + "). Analyse le profil sans offres réelles.\n"
             
             # Note: Les outils WebSearchTools d'Agno sont maintenant intégrés directement dans l'agent
-            # L'agent peut les utiliser automatiquement pendant l'exécution
             tool_results = {}
             
             logger.info(f"[ConfigurableAgent] Exécution de l'agent '{agent_config.name}' (ID: {agent_id})")
@@ -596,11 +786,31 @@ class ConfigurableAgentService:
             
             logger.info(f"[ConfigurableAgent] 📝 Prompt complet qui sera envoyé ({len(full_prompt)} caractères):\n{'='*80}\n{full_prompt}\n{'='*80}")
             
-            logger.info(f"[ConfigurableAgent] ⏳ Exécution de l'agent (peut prendre plusieurs secondes)...")
-            response = agno_agent.run(prompt)
+            tools_attached = getattr(agno_agent, "tools", None) or []
+            tool_names = []
+            for t in tools_attached:
+                name = getattr(t, "name", None) or getattr(t, "__name__", None) or type(t).__name__
+                if hasattr(t, "tools") and t.tools:
+                    tool_names.extend([getattr(s, "name", str(s)) for s in t.tools])
+                else:
+                    tool_names.append(str(name))
+            logger.info(f"[ConfigurableAgent] 🔧 Outils Agno attachés à l'agent: {tool_names}")
+
+            if self.settings.skip_agent_llm:
+                logger.info("[ConfigurableAgent] ⏭️ SKIP_AGENT_LLM activé : appel LLM désactivé (économie de coûts)")
+                output_raw = "[Appel LLM désactivé - SKIP_AGENT_LLM=true. Pré-scraping exécuté si configuré.]"
+                response = type("MockResponse", (), {"content": output_raw, "run_id": None, "messages": [], "tool_calls": []})()
+            else:
+                logger.info(f"[ConfigurableAgent] ⏳ Exécution de l'agent (peut prendre plusieurs secondes)...")
+                response = agno_agent.run(prompt)
             
-            output_raw = response.content if hasattr(response, 'content') else str(response)
-            
+            output_raw = response.content if hasattr(response, "content") else str(response)
+            resp_attrs = {}
+            for k in ("run_id", "messages", "tool_calls"):
+                if hasattr(response, k):
+                    v = getattr(response, k)
+                    resp_attrs[k] = f"list(len={len(v)})" if isinstance(v, list) else v
+            logger.info(f"[ConfigurableAgent] 📤 Réponse Agno: type={type(response).__name__}, content len={len(output_raw)}, attrs={resp_attrs}")
             logger.info(f"[ConfigurableAgent] 📤 Réponse reçue (longueur: {len(output_raw)} caractères)")
             logger.info(f"[ConfigurableAgent] 📄 Sortie brute:\n{'='*80}\n{output_raw}\n{'='*80}")
             

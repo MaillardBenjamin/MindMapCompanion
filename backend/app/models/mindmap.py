@@ -75,11 +75,13 @@ class Action(Base):
     __tablename__ = "actions"
 
     id = Column(Integer, primary_key=True, index=True)
-    trigger_id = Column(Integer, ForeignKey("triggers.id"), nullable=False, index=True)
+    trigger_id = Column(Integer, ForeignKey("triggers.id"), nullable=True, index=True)
+    node_id = Column(Integer, ForeignKey("nodes.id"), nullable=True, index=True)
     
     # Données de l'action
-    name = Column(String, nullable=False)
-    type = Column(String, nullable=False)  # api_call, notification, task, script, email, etc.
+    name = Column(String, nullable=True)
+    action_type = Column(String, nullable=True)  # Utilise action_type au lieu de type (migration ec00d1f3fbe1)
+    mode = Column(String, nullable=True)  # Mode d'exécution (auto, review, manual)
     order = Column(Integer, default=0)  # Ordre d'exécution
     enabled = Column(Boolean, default=True)
     config = Column(JSON, nullable=True)  # Configuration spécifique au type d'action (pour email: to, subject, body, etc.)

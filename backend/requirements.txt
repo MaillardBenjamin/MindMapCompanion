@@ -28,3 +28,6 @@ lxml>=4.9.0
 # Job Scraping
 playwright>=1.40.0
 python-slugify>=8.0.0
+
+# TTS (synthèse vocale)
+gTTS>=2.5.0
