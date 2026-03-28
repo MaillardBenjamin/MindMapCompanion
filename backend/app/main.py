@@ -115,6 +115,64 @@ def health_check():
     return {"status": "healthy"}
 
 
+def _health_check_db_impl():
+    """
+    Diagnostic de la base de données : connexion, table users, colonnes agent_*.
+    Utile pour vérifier que la migration a bien été appliquée.
+    """
+    from app.database import engine
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    result = {"status": "unknown", "checks": {}}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        result["checks"]["connection"] = "ok"
+    except Exception as e:
+        result["checks"]["connection"] = f"error: {type(e).__name__}: {str(e)[:200]}"
+        result["status"] = "error"
+        result["detail"] = "Impossible de se connecter à la base. Vérifiez DATABASE_URL et que PostgreSQL tourne."
+        return result
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'users' ORDER BY ordinal_position")).fetchall()
+        columns = [r[0] for r in row] if row else []
+        result["checks"]["users_columns"] = columns
+        required = ["id", "email", "hashed_password", "agent_langue", "agent_adresse", "agent_prenom", "agent_ton"]
+        missing = [c for c in required if c not in columns]
+        if missing:
+            result["checks"]["missing_columns"] = missing
+            result["status"] = "schema_outdated"
+            result["detail"] = f"Colonnes manquantes dans users: {missing}. Exécutez: cd backend && alembic upgrade head"
+        else:
+            result["checks"]["schema"] = "ok"
+            result["status"] = "healthy"
+    except (OperationalError, ProgrammingError) as e:
+        result["checks"]["schema"] = f"error: {str(e)[:200]}"
+        result["status"] = "error"
+        result["detail"] = str(e)
+    except Exception as e:
+        result["checks"]["schema"] = f"error: {type(e).__name__}: {str(e)[:200]}"
+        result["status"] = "error"
+        result["detail"] = str(e)
+
+    return result
+
+
+@app.get("/health/db")
+def health_check_db():
+    """Diagnostic base de données (voir /api/health/db)."""
+    return _health_check_db_impl()
+
+
+@app.get("/api/health/db")
+def health_check_db_api():
+    """Diagnostic base de données : connexion, table users, colonnes agent_*."""
+    return _health_check_db_impl()
+
+
 @app.get("/api/test-cors")
 def test_cors():
     """Endpoint de test pour vérifier que CORS fonctionne"""

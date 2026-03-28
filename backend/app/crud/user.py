@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timedelta
@@ -6,10 +7,21 @@ from app.schemas.user import UserCreate
 from app.auth.password import get_password_hash
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 def get_user_by_email(db: Session, email: str) -> User | None:
     """Récupère un utilisateur par son email"""
-    return db.query(User).filter(User.email == email).first()
+    logger.info("[CRUD User] get_user_by_email: email=%s", email)
+    try:
+        q = db.query(User).filter(User.email == email)
+        logger.info("[CRUD User] get_user_by_email: exécution query...")
+        user = q.first()
+        logger.info("[CRUD User] get_user_by_email: ok, user_id=%s", user.id if user else None)
+        return user
+    except Exception as e:
+        logger.exception("[CRUD User] get_user_by_email: erreur %s", e)
+        raise
 
 
 def get_user_by_id(db: Session, user_id: int) -> User | None:

@@ -50,6 +50,10 @@ const Settings = () => {
     google_search_engine_id: '',
     bing_search_api_key: '',
     search_provider: 'google',
+    agent_langue: 'fr',
+    agent_adresse: '',
+    agent_prenom: '',
+    agent_ton: '',
   });
 
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
@@ -105,6 +109,13 @@ const Settings = () => {
           google_search_engine_id: settings.google_search_engine_id,
           bing_search_api_key: settings.bing_search_api_key !== '***' ? settings.bing_search_api_key : undefined,
           search_provider: settings.search_provider,
+        };
+      } else if (section === 'agents') {
+        updateData = {
+          agent_langue: settings.agent_langue || 'fr',
+          agent_adresse: settings.agent_adresse || undefined,
+          agent_prenom: settings.agent_prenom || undefined,
+          agent_ton: settings.agent_ton || undefined,
         };
       }
 
@@ -445,6 +456,119 @@ const Settings = () => {
                 }}
               >
                 {saving.ai ? 'Sauvegarde...' : 'Sauvegarder'}
+              </Button>
+            </Box>
+          </CardContent>
+        </Card>
+
+        {/* Réponses des agents : langue, tutoiement, prénom, ton */}
+        <Card
+          sx={{
+            backgroundColor: 'rgba(18, 24, 43, 0.6)',
+            border: '1px solid rgba(255,255,255,0.06)',
+            borderRadius: '20px',
+            mb: 3,
+          }}
+        >
+          <CardContent sx={{ p: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
+              <Box
+                sx={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: '12px',
+                  background: 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <AIIcon sx={{ color: '#fff', fontSize: 24 }} />
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="h6" sx={{ fontWeight: 600, color: 'text.primary' }}>
+                  Réponses des agents
+                </Typography>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  Langue, façon de s'adresser à toi, prénom et ton utilisés pour tous les agents
+                </Typography>
+              </Box>
+            </Box>
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Langue de réponse</InputLabel>
+                <Select
+                  value={settings.agent_langue || 'fr'}
+                  onChange={(e) => handleFieldChange('agent_langue', e.target.value)}
+                  label="Langue de réponse"
+                >
+                  <MenuItem value="fr">Français</MenuItem>
+                  <MenuItem value="en">English</MenuItem>
+                  <MenuItem value="es">Español</MenuItem>
+                  <MenuItem value="de">Deutsch</MenuItem>
+                </Select>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Langue dans laquelle les agents rédigent leurs réponses
+                </Typography>
+              </FormControl>
+              <FormControl fullWidth size="small">
+                <InputLabel>Comment s'adresser à moi</InputLabel>
+                <Select
+                  value={settings.agent_adresse || ''}
+                  onChange={(e) => handleFieldChange('agent_adresse', e.target.value)}
+                  label="Comment s'adresser à moi"
+                >
+                  <MenuItem value="">Non spécifié</MenuItem>
+                  <MenuItem value="tu">Tutoiement (me dire « tu »)</MenuItem>
+                  <MenuItem value="vous">Vouvoiement (me dire « vous »)</MenuItem>
+                </Select>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Les agents utiliseront « tu » ou « vous » selon ce choix
+                </Typography>
+              </FormControl>
+              <TextField
+                fullWidth
+                size="small"
+                label="Mon prénom"
+                placeholder="Ex. Benjamin"
+                value={settings.agent_prenom || ''}
+                onChange={(e) => handleFieldChange('agent_prenom', e.target.value)}
+                helperText="Pour personnaliser les réponses (ex. « Bonjour Benjamin »)"
+              />
+              <FormControl fullWidth size="small">
+                <InputLabel>Ton / façon de me parler</InputLabel>
+                <Select
+                  value={settings.agent_ton || ''}
+                  onChange={(e) => handleFieldChange('agent_ton', e.target.value)}
+                  label="Ton / façon de me parler"
+                >
+                  <MenuItem value="">Non spécifié</MenuItem>
+                  <MenuItem value="formel">Formel</MenuItem>
+                  <MenuItem value="amical">Amical</MenuItem>
+                  <MenuItem value="neutre">Neutre</MenuItem>
+                  <MenuItem value="professionnel">Professionnel</MenuItem>
+                  <MenuItem value="bienveillant">Bienveillant</MenuItem>
+                </Select>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Style des réponses des agents
+                </Typography>
+              </FormControl>
+            </Box>
+
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
+              <Button
+                variant="contained"
+                startIcon={<SaveIcon />}
+                onClick={() => handleSave('agents')}
+                disabled={saving.agents}
+                sx={{
+                  backgroundColor: '#8B5CF6',
+                  color: '#fff',
+                  '&:hover': { backgroundColor: '#6D28D9' },
+                }}
+              >
+                {saving.agents ? 'Sauvegarde...' : 'Sauvegarder'}
               </Button>
             </Box>
           </CardContent>

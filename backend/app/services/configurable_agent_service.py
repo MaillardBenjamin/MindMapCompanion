@@ -2,12 +2,14 @@
 Service pour charger et exécuter les agents configurables.
 """
 
+import asyncio
 import json
 import logging
 import re
-from urllib.parse import quote_plus
 import time
-from typing import Dict, Any, Optional, List
+from datetime import datetime
+from urllib.parse import quote_plus
+from typing import Dict, Any, Optional, List, AsyncIterator
 from sqlalchemy.orm import Session
 
 from agno.agent import Agent
@@ -19,9 +21,98 @@ DEFAULT_SCRAPER_PATHS = [
 from app.core.agno_model import get_agno_chat_model
 from app.core.config import get_settings
 from app.models.configurable_agent import ConfigurableAgent, AgentExecutionLog
+from app.models.user import User
 from app.services.agent_config_parser import AgentConfigParser
 
 logger = logging.getLogger(__name__)
+
+# Mois en français pour la date du jour (indépendant de la locale)
+_MOIS_FR = (
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+)
+
+
+def _current_date_fr() -> str:
+    """Retourne la date du jour au format français (ex. « 6 février 2026 »)."""
+    now = datetime.now()
+    return f"{now.day} {_MOIS_FR[now.month - 1]} {now.year}"
+
+
+def _current_time_fr() -> str:
+    """Retourne l'heure courante au format français (ex. « 10h40 »)."""
+    now = datetime.now()
+    return f"{now.hour}h{now.minute:02d}"
+
+
+# Clés d'options de personnalisation injectées dans le prompt (disponibles en {{key}} et dans le preprompt)
+PREPROMPT_OPTION_KEYS = ("langue", "adresse", "prenom", "ton")
+# Valeurs de « ton » suggérées : formel, amical, neutre, professionnel, bienveillant, etc.
+
+
+def _build_preprompt(opts: Dict[str, Any]) -> str:
+    """
+    Construit le bloc preprompt (date, heure, langue, prénom, ton, adresse) à préfixer au prompt.
+    Les options prenom, ton, langue, adresse peuvent être passées dans options lors de l'exécution.
+    """
+    langue = (opts.get("langue") or "fr").strip().lower()
+    lang_names = {"fr": "français", "en": "anglais", "es": "espagnol", "de": "allemand", "it": "italien"}
+    lang_label = lang_names.get(langue, langue)
+    lines = [
+        "[Contexte d'exécution]",
+        f"- Date : {opts.get('current_date', '')}",
+        f"- Heure : {opts.get('current_time', '')}",
+        f"- Langue : rédiger toute la réponse en {lang_label}. Utiliser exclusivement cette langue pour le texte, les titres et les formules.",
+        f"- RÈGLE OBLIGATOIRE : La réponse finale doit être intégralement en {lang_label}. Aucun titre, phrase, liste ou conclusion en une autre langue (pas d'anglais si langue=fr).",
+    ]
+    adresse = (opts.get("adresse") or "").strip().lower()
+    if adresse in ("tu", "vous"):
+        tutoiement = adresse == "tu"
+        lines.append(
+            f"- Adresse : {'tutoiement (tu, te, ton/ta/tes)' if tutoiement else 'vouvoiement (vous, votre/vos)'}. "
+            "Utiliser de façon cohérente dans toute la réponse (y compris formules d'appel et de conclusion)."
+        )
+    prenom = (opts.get("prenom") or "").strip()
+    if prenom:
+        lines.append(f"- Destinataire : tu t'adresses à {prenom}.")
+        lines.append(
+            f"  Utiliser le prénom « {prenom} » dans la réponse : "
+            "formule d'appel (ex. « Bonjour {0} »), section « Destinataire : {0} » si le format le prévoit, "
+            "et formules de conclusion quand c'est naturel.".format(prenom)
+        )
+    ton = (opts.get("ton") or "").strip()
+    if ton:
+        lines.append(f"- Ton : {ton}.")
+        lines.append(
+            "  Adapter le style et le vocabulaire à ce ton dans toute la réponse "
+            "(niveau de langue, formules de politesse, directivité, chaleur)."
+        )
+    # Signature en fin de réponse : utiliser le nom de l'agent (une seule formule, pas de « Signoff » ni autre ligne)
+    agent_name = (opts.get("agent_name") or "").strip()
+    if agent_name:
+        lines.append(
+            f"- En fin de réponse : conclure uniquement par « N'hésite pas à me faire savoir si tu veux un approfondissement sur l'un des points ! Cordialement, {agent_name} ». Ne pas ajouter de ligne « Signoff », « À votre disposition » ou autre formule de clôture en plus : cette phrase avec le nom de l'agent suffit."
+        )
+    # Rappel final pour ancrer la langue (éviter les réponses en anglais quand langue=fr)
+    if langue == "fr":
+        lines.append("- Rappel : rédiger la réponse entière en français, sans aucun passage en anglais.")
+    return "\n".join(lines) + "\n\n"
+
+
+# Lignes de log du type "web_search(...) completed in 1.6495s." à exclure du Markdown final
+_TOOL_COMPLETION_LINE_RE = re.compile(
+    r"^\s*\w+\([^)]*\)\s+completed\s+in\s+[\d.]+s\.\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_tool_completion_log_lines(text: str) -> str:
+    """Retire du texte les lignes de log d'outils (ex. web_search(...) completed in 1.2s.)."""
+    if not text or not text.strip():
+        return text
+    lines = text.split("\n")
+    kept = [line for line in lines if not _TOOL_COMPLETION_LINE_RE.match(line)]
+    return "\n".join(kept)
 
 
 def _schema_to_markdown_description(schema: Dict[str, Any], indent: int = 0) -> str:
@@ -138,7 +229,7 @@ class ConfigurableAgentService:
         Construit un agent Agno avec :
         - Le modèle OpenAI configuré
         - Les instructions (persona + instructions + schéma de sortie)
-        - Les outils disponibles (DuckDuckGo pour recherche web)
+        - Les outils disponibles (WebSearchTools pour recherche web, multi-backend)
         
         Args:
             config: Configuration de l'agent (ConfigurableAgent).
@@ -147,8 +238,8 @@ class ConfigurableAgentService:
             Agent: Instance Agno configurée et prête à l'emploi.
         
         Note:
-            Les outils de recherche web (DuckDuckGo) sont automatiquement
-            ajoutés si demandés dans config.tools.
+            Les outils de recherche web (WebSearchTools, backend auto) sont
+            ajoutés si demandés dans config.tools (web_search, search_news, etc.).
         """
         model = get_agno_chat_model()
         
@@ -196,47 +287,47 @@ class ConfigurableAgentService:
             if has_web_search:
                 try:
                     import json
-                    from agno.tools.duckduckgo import DuckDuckGoTools
+                    from agno.tools.websearch import WebSearchTools
                     try:
                         from ddgs.exceptions import DDGSException
                     except ImportError:
-                        DDGSException = Exception  # fallback si ddgs n'expose pas l'exception
+                        DDGSException = Exception
 
-                    class DuckDuckGoToolsResilient(DuckDuckGoTools):
-                        """Sous-classe d'Agno DuckDuckGoTools qui intercepte DDGSException (No results found) pour ne pas faire échouer l'agent."""
+                    class WebSearchToolsResilient(WebSearchTools):
+                        """Sous-classe d'Agno WebSearchTools qui intercepte DDGSException (No results found) pour ne pas faire échouer l'agent."""
 
-                        def duckduckgo_search(self, query: str, max_results: int = 5) -> str:
+                        def web_search(self, query: str, max_results: int = 5) -> str:
                             try:
-                                return super().duckduckgo_search(query=query, max_results=max_results)
+                                return super().web_search(query=query, max_results=max_results)
                             except DDGSException as e:
-                                logger.warning("[ConfigurableAgent] DuckDuckGo search: %s", e)
+                                logger.warning("[ConfigurableAgent] Web search: %s", e)
                                 return json.dumps(
-                                    [{"title": "Aucun résultat", "body": "DuckDuckGo n'a pas retourné de résultats pour cette requête. Reformule ou continue sans."}],
+                                    [{"title": "Aucun résultat", "body": "La recherche n'a pas retourné de résultats pour cette requête. Reformule ou continue sans."}],
                                     indent=2,
                                     ensure_ascii=False,
                                 )
 
-                        def duckduckgo_news(self, query: str, max_results: int = 5) -> str:
+                        def search_news(self, query: str, max_results: int = 5) -> str:
                             try:
-                                return super().duckduckgo_news(query=query, max_results=max_results)
+                                return super().search_news(query=query, max_results=max_results)
                             except DDGSException as e:
-                                logger.warning("[ConfigurableAgent] DuckDuckGo news: %s", e)
+                                logger.warning("[ConfigurableAgent] Web search news: %s", e)
                                 return json.dumps(
-                                    [{"title": "Aucun résultat", "body": "DuckDuckGo n'a pas retourné d'actualités pour cette requête. Reformule ou continue sans."}],
+                                    [{"title": "Aucun résultat", "body": "La recherche n'a pas retourné d'actualités pour cette requête. Reformule ou continue sans."}],
                                     indent=2,
                                     ensure_ascii=False,
                                 )
 
-                    duckduckgo_toolkit = DuckDuckGoToolsResilient()
-                    agno_tools.append(duckduckgo_toolkit)
-                    logger.info(f"[ConfigurableAgent] ✅ Outil DuckDuckGoTools (Agno) configuré")
-                    logger.info(f"[ConfigurableAgent]   - duckduckgo_search: activé")
-                    logger.info(f"[ConfigurableAgent]   - duckduckgo_news: activé")
+                    # Google, Bing et Yahoo : backends multiples (ddgs agrège les résultats)
+                    web_search_toolkit = WebSearchToolsResilient(backend="google,bing,yahoo")
+                    agno_tools.append(web_search_toolkit)
+                    logger.info("[ConfigurableAgent] ✅ Outil WebSearchTools (Agno) configuré (backend=google,bing,yahoo)")
+                    logger.info("[ConfigurableAgent]   - web_search / search_news : activé")
                 except ImportError as e:
-                    logger.error(f"[ConfigurableAgent] ❌ DuckDuckGoTools d'Agno non disponible: {e}")
-                    logger.error(f"[ConfigurableAgent] Installation requise: pip install ddgs")
+                    logger.error(f"[ConfigurableAgent] ❌ WebSearchTools non disponible: {e}")
+                    logger.error(f"[ConfigurableAgent] Installation requise: pip install ddgs et agno>=2.x (avec agno.tools.websearch)")
                 except Exception as e:
-                    logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de DuckDuckGoTools: {e}", exc_info=True)
+                    logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de WebSearchTools: {e}", exc_info=True)
 
             # Vérifier si des outils météo sont demandés
             weather_tools = ["weather", "meteo", "get_weather_forecast"]
@@ -252,6 +343,31 @@ class ConfigurableAgentService:
                     logger.error(f"[ConfigurableAgent] ❌ WeatherTools non disponible: {e}")
                 except Exception as e:
                     logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de WeatherTools: {e}", exc_info=True)
+
+            # Vérifier si des outils d'optimisation de portefeuille PEA simulé sont demandés
+            pea_portfolio_tools = [
+                "optimize_pea_portfolio",
+                "generate_pea_trading_plan",
+                "pea_portfolio_optimizer",
+                "yfinance_portfolio",
+            ]
+            has_pea_portfolio = any(tool in pea_portfolio_tools for tool in normalized_tools)
+            if has_pea_portfolio:
+                try:
+                    from app.tools.pea_portfolio_tools import PEAPortfolioTools
+                    pea_toolkit = PEAPortfolioTools()
+                    agno_tools.append(pea_toolkit)
+                    logger.info("[ConfigurableAgent] ✅ Outil PEAPortfolioTools configuré")
+                    logger.info("[ConfigurableAgent]   - optimize_pea_portfolio: activé")
+                    logger.info("[ConfigurableAgent]   - generate_pea_trading_plan: activé")
+                except ImportError as e:
+                    logger.error(f"[ConfigurableAgent] ❌ PEAPortfolioTools non disponible: {e}")
+                    logger.error("[ConfigurableAgent] Installation requise: pip install yfinance")
+                except Exception as e:
+                    logger.error(
+                        f"[ConfigurableAgent] ❌ Erreur lors de la configuration de PEAPortfolioTools: {e}",
+                        exc_info=True,
+                    )
             
             # Vérifier si des outils de scraping d'offres d'emploi sont demandés
             job_scraping_tools = ["scrape_job_offers", "job_scraping", "list_saved_offers", "send_job_matching_email"]
@@ -306,11 +422,11 @@ class ConfigurableAgentService:
                     instructions_parts.append(
                         f"\n🔧 Outils de recherche web disponibles et ACTIFS:\n"
                         "IMPORTANT: Tu DOIS utiliser les outils de recherche web pour obtenir des informations à jour.\n"
-                        "Les outils suivants sont disponibles et fonctionnels:\n"
-                        "- duckduckgo_search: Recherche web générale (utilise cet outil pour rechercher des informations)\n"
-                        "- duckduckgo_news: Recherche d'actualités récentes (utilise cet outil pour les dernières nouvelles)\n"
+                        "Les outils suivants sont disponibles :\n"
+                        "- web_search : recherche web générale\n"
+                        "- search_news : actualités récentes\n"
                         "\nINSTRUCTIONS D'UTILISATION:\n"
-                        "1. COMMENCE par utiliser duckduckgo_search ou duckduckgo_news avec une requête pertinente\n"
+                        "1. COMMENCE par utiliser web_search ou search_news avec une requête pertinente\n"
                         "2. Analyse les résultats obtenus\n"
                         "3. Utilise ces informations récentes pour construire ta réponse\n"
                         "4. Cite les URLs exactes des sources dans ta réponse JSON\n"
@@ -330,13 +446,32 @@ class ConfigurableAgentService:
                         "3. Réponds en français, de façon structurée\n"
                         "\nLes données proviennent d'Open-Meteo (gratuit, sans clé API)."
                     )
+
+                # Instructions pour les outils d'optimisation PEA simulée
+                if has_pea_portfolio:
+                    instructions_parts.append(
+                        "\n🔧 Outil d'optimisation de portefeuille PEA simulé disponible et ACTIF:\n"
+                        "IMPORTANT: Tu DOIS appeler generate_pea_trading_plan (ou optimize_pea_portfolio en fallback) avant de rédiger ta recommandation.\n"
+                        "- generate_pea_trading_plan: sélectionne des titres PEA-like, optimise et génère des ordres BUY/SELL avec coûts.\n"
+                        "  Ce tool renvoie aussi `technical_analysis` (indicateurs) et `portfolio_tracking` (suivi persistant).\n"
+                        "- optimize_pea_portfolio: mode compatibilité pour allocation initiale.\n"
+                        "  Paramètres principaux: cash/positions, candidate_tickers, risk_profile, lookback_years, max_weight_pct, frais, portfolio_id, persist_portfolio_state.\n"
+                        "\nINSTRUCTIONS:\n"
+                        "1. Vérifie les hypothèses d'entrée (capital, tickers, profil de risque)\n"
+                        "2. Appelle generate_pea_trading_plan avec ces paramètres (et active le suivi persistant si demandé)\n"
+                        "3. Explique les résultats avec les indicateurs techniques (momentum, volatilité, drawdown, score technique/news/final)\n"
+                        "4. Fournis un plan d'exécution clair avec les ordres, le cash restant, les coûts et les risques principaux\n"
+                        "5. Si `portfolio_tracking` est présent, mentionne l'emplacement du fichier d'état et le statut de sauvegarde\n"
+                        "\nLa simulation modélise des frais estimés, mais ignore la fiscalité et la liquidité réelle."
+                    )
             else:
                 # Si aucun outil n'a pu être chargé, mentionner dans les instructions
                 tools_list = ", ".join(normalized_tools)
                 instructions_parts.append(
                     f"\n⚠️  Outils demandés: {tools_list}\n"
                     "Note: Ces outils nécessitent une configuration supplémentaire pour fonctionner.\n"
-                    "Pour activer les outils de recherche, installez: pip install ddgs"
+                    "Pour activer les outils de recherche, installez: pip install ddgs\n"
+                    "Pour activer l'optimisation de portefeuille, installez: pip install yfinance"
                 )
         
         # Ajouter des informations sur les serveurs MCP
@@ -628,14 +763,32 @@ class ConfigurableAgentService:
             # Rendre le prompt avec le texte d'entrée et les options (exclure input_text des kwargs, déjà passé)
             logger.info(f"[ConfigurableAgent] 📥 Options reçues (agent_options): keys={list((options or {}).keys())}, raw={options}")
             opts = {k: v for k, v in (options or {}).items() if k != "input_text"}
+            opts.setdefault("current_date", _current_date_fr())
+            opts.setdefault("current_year", str(datetime.now().year))
+            opts.setdefault("current_time", _current_time_fr())
+            # Préférences depuis l'utilisateur en base (Paramètres → Réponses des agents)
+            _user = db.query(User).filter(User.id == user_id).first()
+            if _user:
+                opts.setdefault("langue", opts.get("langue") or getattr(_user, "agent_langue", None) or "fr")
+                if getattr(_user, "agent_adresse", None):
+                    opts.setdefault("adresse", _user.agent_adresse)
+                if getattr(_user, "agent_prenom", None):
+                    opts.setdefault("prenom", _user.agent_prenom)
+                if getattr(_user, "agent_ton", None):
+                    opts.setdefault("ton", _user.agent_ton)
+            else:
+                opts.setdefault("langue", opts.get("langue") or "fr")
+            opts.setdefault("agent_name", agent_config.name)
             logger.info(f"[ConfigurableAgent] 📥 Opts pour template (sans input_text): keys={list(opts.keys())}, values={opts}")
             prompt = self.parser.render_prompt(
                 agent_config.prompt_template,
                 input_text,
                 **opts,
             )
-            
-            logger.info(f"[ConfigurableAgent] 📝 Prompt rendu: {len(prompt)} caractères")
+            preprompt = _build_preprompt(opts)
+            prompt = preprompt + prompt
+            logger.info(f"[ConfigurableAgent] 📝 Prompt rendu (avec preprompt): {len(prompt)} caractères")
+            logger.info("[ConfigurableAgent] 📝 Prompt complet (console):\n%s", prompt)
             # Extraire et logger la section "Contexte du candidat" pour vérifier les champs dynamiques
             if "Contexte du candidat" in prompt or "## Contexte" in prompt:
                 ctx_start = prompt.find("Contexte du candidat") if "Contexte du candidat" in prompt else prompt.find("## Contexte")
@@ -741,7 +894,7 @@ class ConfigurableAgentService:
                     logger.exception("[ConfigurableAgent] ❌ Pré-scraping échoué: %s", e)
                     prompt = prompt + "\n\n**Note**: Le scraping des offres a échoué (" + str(e) + "). Analyse le profil sans offres réelles.\n"
             
-            # Note: Les outils WebSearchTools d'Agno sont maintenant intégrés directement dans l'agent
+            # WebSearchTools (Agno) fournit web_search et search_news avec backend auto (DuckDuckGo, Google, Bing, etc.)
             tool_results = {}
             
             logger.info(f"[ConfigurableAgent] Exécution de l'agent '{agent_config.name}' (ID: {agent_id})")
@@ -893,6 +1046,244 @@ class ConfigurableAgentService:
             db.commit()
             
             raise
+
+    async def execute_agent_stream(
+        self,
+        db: Session,
+        agent_id: int,
+        user_id: int,
+        input_text: str,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[str]:
+        """
+        Exécute l'agent en mode stream et yield des lignes SSE (data: {...}\n\n).
+        Même préparation que execute_agent, puis agent.run(prompt, stream=True) en thread.
+        """
+        agent_config = db.query(ConfigurableAgent).filter(
+            ConfigurableAgent.id == agent_id,
+            ConfigurableAgent.is_active == True,
+        ).first()
+        if not agent_config:
+            yield f"data: {json.dumps({'error': 'Agent non trouvé ou inactif'})}\n\n"
+            return
+        if not agent_config.is_public and agent_config.user_id != user_id:
+            yield f"data: {json.dumps({'error': 'Non autorisé'})}\n\n"
+            return
+
+        opts = {k: v for k, v in (options or {}).items() if k != "input_text"}
+        opts.setdefault("current_date", _current_date_fr())
+        opts.setdefault("current_year", str(datetime.now().year))
+        opts.setdefault("current_time", _current_time_fr())
+        _user = db.query(User).filter(User.id == user_id).first()
+        if _user:
+            opts.setdefault("langue", opts.get("langue") or getattr(_user, "agent_langue", None) or "fr")
+            if getattr(_user, "agent_adresse", None):
+                opts.setdefault("adresse", _user.agent_adresse)
+            if getattr(_user, "agent_prenom", None):
+                opts.setdefault("prenom", _user.agent_prenom)
+            if getattr(_user, "agent_ton", None):
+                opts.setdefault("ton", _user.agent_ton)
+        else:
+            opts.setdefault("langue", opts.get("langue") or "fr")
+        opts.setdefault("agent_name", agent_config.name)
+        prompt = self.parser.render_prompt(agent_config.prompt_template, input_text, **opts)
+        prompt = _build_preprompt(opts) + prompt
+        logger.info("[ConfigurableAgent] 📝 Prompt complet (stream, console):\n%s", prompt)
+
+        # Pré-scraping job matcher (même logique que execute_agent)
+        norm_tools = []
+        for t in (agent_config.tools or []):
+            m = re.match(r'^`?([a-zA-Z_][a-zA-Z0-9_]*)`?', str(t))
+            norm_tools.append(m.group(1) if m else t)
+        job_scraping_names = ["scrape_job_offers", "job_scraping", "list_saved_offers", "send_job_matching_email"]
+        if any(x in job_scraping_names for x in norm_tools) and opts.get("keywords") and opts.get("location"):
+            try:
+                from app.services.job_scraping.job_scraping_service import get_job_scraping_service
+                paths = self._scraper_paths_from_markdown(agent_config.markdown_config)
+                search_params = {"keywords": str(opts["keywords"]).strip(), "location": str(opts["location"]).strip()}
+                if opts.get("job_type"):
+                    raw = opts["job_type"]
+                    jt_list = [x.strip() for x in (raw if isinstance(raw, list) else str(raw).split(",")) if x.strip()]
+                    if jt_list:
+                        search_params["job_type"] = jt_list[0] if len(jt_list) == 1 else jt_list
+                        tyc_map = {"cdi": 1, "cdd": 2, "freelance": 7, "stage": 8}
+                        tyc_values = [tyc_map[jt.lower()] for jt in jt_list if jt.lower() in tyc_map]
+                        if tyc_values:
+                            search_params["tyc"] = ",".join(str(t) for t in tyc_values)
+                salary_raw = opts.get("salary") or ""
+                if isinstance(salary_raw, str) and salary_raw.strip():
+                    match = re.search(r"\d+", salary_raw.strip())
+                    if match:
+                        search_params["salary_min"] = int(match.group(), 10)
+                search_params.setdefault("tyc", "")
+                search_params.setdefault("salary_min", "")
+                search_params["motscles"] = quote_plus(search_params["keywords"])
+                loc = search_params["location"].strip()
+                search_params["reg"] = "FR-J" if "ile de france" in loc.lower() or "île-de-france" in loc.lower() else (loc.upper() if re.match(r"^FR-[A-Z]$", loc, re.I) else "")
+                svc = get_job_scraping_service()
+                scrape_results = await svc.scrape_multiple(config_paths=paths, search_params=search_params, save_to_files=True)
+                total_offers = sum(r.offers_count for r in scrape_results.values())
+                parts = ["\n## Offres scrapées\n"]
+                for src, r in scrape_results.items():
+                    parts.append(f"- **{src}**: {r.offers_count} offres")
+                parts.append(f"\n**Total**: {total_offers} offres.\n")
+                n, max_offers, max_desc = 0, 30, 400
+                for src, r in scrape_results.items():
+                    for o in r.offers:
+                        if n >= max_offers:
+                            break
+                        raw = (o.description or "").replace("\n", " ").strip()
+                        desc = raw[:max_desc] + ("..." if len(raw) > max_desc else "")
+                        parts.extend([f"### {o.title} @ {o.company}", f"- Lieu: {o.location} | [Lien]({o.url})"])
+                        if o.salary:
+                            parts.append(f"- Salaire: {o.salary}")
+                        parts.append(f"- {desc}\n")
+                        n += 1
+                    if n >= max_offers:
+                        break
+                if total_offers > 0 and n < total_offers:
+                    parts.append(f"*… et {total_offers - n} autres offres.*\n")
+                prompt = prompt + "\n".join(parts)
+            except Exception as e:
+                logger.exception("[ConfigurableAgent] Pré-scraping stream échoué: %s", e)
+                prompt = prompt + "\n\n**Note**: Le scraping a échoué (" + str(e) + ").\n"
+
+        agno_agent = self._create_agent(agent_config)
+
+        if self.settings.skip_agent_llm:
+            msg = "[Appel LLM désactivé - SKIP_AGENT_LLM=true.]"
+            yield f"data: {json.dumps({'event': 'status', 'message': 'Appel LLM désactivé.'})}\n\n"
+            yield f"data: {json.dumps({'content': msg})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'output_raw': msg})}\n\n"
+            return
+
+        # Message de statut pour l'utilisateur : envoi du prompt
+        yield f"data: {json.dumps({'event': 'status', 'message': 'Envoi du prompt au modèle…'})}\n\n"
+
+        queue: asyncio.Queue = asyncio.Queue()
+        start_time = time.time()
+
+        # Agno 2.x : événements de streaming (RunEvent dans agno.utils.events en 2.4.x)
+        from agno.utils.events import RunEvent
+
+        def _tools_from_chunk(chunk: Any) -> List[Any]:
+            """Agno 2.x : ToolCallStartedEvent/ToolCallCompletedEvent ont .tool (singulier), pas .tools."""
+            tools_list = list(getattr(chunk, "tools", None) or [])
+            if not tools_list and getattr(chunk, "tool", None):
+                tools_list = [chunk.tool]
+            return tools_list
+
+        def _emit_tool_call_started(chunk: Any) -> None:
+            formatted = getattr(chunk, "formatted_tool_calls", None) or []
+            tools_list = _tools_from_chunk(chunk)
+            logger.info("[ConfigurableAgent] Stream: envoi événement 'Appel de l'outil' (formatted=%s, tools=%s)", len(formatted), len(tools_list))
+            if formatted:
+                for fc in formatted:
+                    queue.put_nowait(("status", f"Appel de l'outil : {fc}"))
+            elif tools_list:
+                for t in tools_list:
+                    name = getattr(t, "tool_name", None) or "outil"
+                    args = getattr(t, "tool_args", None) or {}
+                    args_str = ", ".join(f"{k}={v!r}" for k, v in (args or {}).items())[:80]
+                    queue.put_nowait(("status", f"Appel de l'outil : {name}({args_str}{'…' if len(args_str) >= 80 else ''})"))
+            else:
+                queue.put_nowait(("status", "Appel d'un outil…"))
+
+        def _emit_tool_call_completed(chunk: Any) -> None:
+            tools_list = _tools_from_chunk(chunk)
+            # Agno 2.x : résultat peut être dans chunk.content pour un seul outil
+            content = getattr(chunk, "content", None)
+            logger.info("[ConfigurableAgent] Stream: envoi événement 'Résultat outil' pour %d outil(s)", len(tools_list))
+            for t in tools_list:
+                name = getattr(t, "tool_name", None) or "outil"
+                result = getattr(t, "result", None)
+                if result is None and content is not None and len(tools_list) == 1:
+                    result = content
+                if result is not None:
+                    preview = (str(result)[:300] + "…") if len(str(result)) > 300 else str(result)
+                    queue.put_nowait(("tool_result", {"tool_name": name, "result_preview": preview}))
+                    queue.put_nowait(("status", f"Résultat reçu pour {name} ({len(str(result))} car.)"))
+                else:
+                    queue.put_nowait(("status", f"Résultat reçu pour {name}"))
+
+        def blocking_stream() -> None:
+            try:
+                full_content: List[str] = []
+                final_event_content_candidates: List[str] = []
+                # Agno 2.x : stream_events=True pour recevoir ToolCallStartedEvent / ToolCallCompletedEvent
+                stream_kw: Dict[str, Any] = {"stream": True, "stream_events": True}
+                for chunk in agno_agent.run(prompt, **stream_kw):
+                    event = getattr(chunk, "event", None)
+                    if event == RunEvent.tool_call_started or event == RunEvent.tool_call_started.value:
+                        _emit_tool_call_started(chunk)
+                    elif event == RunEvent.tool_call_completed or event == RunEvent.tool_call_completed.value:
+                        _emit_tool_call_completed(chunk)
+                    else:
+                        # Fallback : inférer depuis tool(s)/formatted_tool_calls si event non exposé
+                        tools_list = _tools_from_chunk(chunk)
+                        formatted = getattr(chunk, "formatted_tool_calls", None) or []
+                        if tools_list and any(getattr(t, "result", None) is not None for t in tools_list):
+                            _emit_tool_call_completed(chunk)
+                        elif formatted or tools_list or getattr(chunk, "tool", None):
+                            _emit_tool_call_started(chunk)
+                    # Ne pas prendre le content des événements "run_completed" / "run_content_completed" :
+                    # ils contiennent la réponse complète et on a déjà les deltas via run_content → évite le doublon
+                    event_skip_content = event in (
+                        RunEvent.run_completed,
+                        RunEvent.run_completed.value,
+                        RunEvent.run_content_completed,
+                        RunEvent.run_content_completed.value,
+                    )
+                    c = getattr(chunk, "content", None)
+                    if c is not None:
+                        s = str(c) if not isinstance(c, str) else c
+                        if s:
+                            s = _strip_tool_completion_log_lines(s)
+                            if s:
+                                if event_skip_content:
+                                    # Certains providers n'envoient le texte complet qu'en fin de run.
+                                    final_event_content_candidates.append(s)
+                                else:
+                                    full_content.append(s)
+                                    queue.put_nowait(("content", s))
+                queue.put_nowait(("status", "Réponse complète."))
+                full_text = "".join(full_content)
+                if not full_text and final_event_content_candidates:
+                    full_text = final_event_content_candidates[-1]
+                    logger.info(
+                        "[ConfigurableAgent] Stream: fallback contenu final depuis événement de fin (taille=%s)",
+                        len(full_text),
+                    )
+                queue.put_nowait(("done", _strip_tool_completion_log_lines(full_text)))
+            except Exception as e:
+                logger.exception("[ConfigurableAgent] Stream run error: %s", e)
+                queue.put_nowait(("error", str(e)))
+
+        loop = asyncio.get_event_loop()
+        _ = loop.run_in_executor(None, blocking_stream)
+
+        while True:
+            try:
+                kind, data = await asyncio.wait_for(queue.get(), timeout=120.0)
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'content': ''})}\n\n"
+                continue
+            if kind == "error":
+                yield f"data: {json.dumps({'error': data})}\n\n"
+                return
+            if kind == "status":
+                yield f"data: {json.dumps({'event': 'status', 'message': data})}\n\n"
+                continue
+            if kind == "tool_result":
+                yield f"data: {json.dumps({'event': 'tool_result', 'tool_name': data.get('tool_name'), 'result_preview': data.get('result_preview', '')})}\n\n"
+                continue
+            if kind == "content":
+                yield f"data: {json.dumps({'content': data})}\n\n"
+                continue
+            if kind == "done":
+                execution_time_ms = int((time.time() - start_time) * 1000)
+                yield f"data: {json.dumps({'done': True, 'output_raw': data, 'execution_time_ms': execution_time_ms})}\n\n"
+                return
 
 
 # Instance singleton

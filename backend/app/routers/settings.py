@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import os
 from pathlib import Path
 
 from app.api.deps import get_current_user
+from app.database import get_db
 from app.models.user import User
 from app.core.config import get_settings as get_settings_config
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -34,6 +35,12 @@ class SettingsUpdate(BaseModel):
     bing_search_api_key: Optional[str] = None
     search_provider: Optional[str] = None
 
+    # Réponses des agents (langue, façon de s'adresser, prénom, ton)
+    agent_langue: Optional[str] = None
+    agent_adresse: Optional[str] = None
+    agent_prenom: Optional[str] = None
+    agent_ton: Optional[str] = None
+
 
 class SettingsResponse(BaseModel):
     # Email
@@ -58,10 +65,20 @@ class SettingsResponse(BaseModel):
     bing_search_api_key: str  # Masqué
     search_provider: str
 
+    # Réponses des agents
+    agent_langue: str
+    agent_adresse: str
+    agent_prenom: str
+    agent_ton: str
+
+
+# Champs stockés en base (préférences utilisateur), pas dans .env
+AGENT_PREFERENCE_KEYS = {"agent_langue", "agent_adresse", "agent_prenom", "agent_ton"}
+
 
 @router.get("", response_model=SettingsResponse)
 async def get_settings(current_user: User = Depends(get_current_user)):
-    """Récupère les paramètres (masque les mots de passe)"""
+    """Récupère les paramètres (masque les mots de passe). Les préférences agents viennent de l'utilisateur en base."""
     settings = get_settings_config()
     return SettingsResponse(
         imap_host=settings.imap_host,
@@ -80,68 +97,73 @@ async def get_settings(current_user: User = Depends(get_current_user)):
         google_search_engine_id=settings.google_search_engine_id,
         bing_search_api_key="***" if settings.bing_search_api_key else "",
         search_provider=settings.search_provider,
+        agent_langue=getattr(current_user, "agent_langue", None) or "fr",
+        agent_adresse=getattr(current_user, "agent_adresse", None) or "",
+        agent_prenom=getattr(current_user, "agent_prenom", None) or "",
+        agent_ton=getattr(current_user, "agent_ton", None) or "",
     )
 
 
 @router.post("")
 async def update_settings(
     settings_update: SettingsUpdate,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """Met à jour les paramètres dans le fichier .env"""
-    # Vérifier que l'utilisateur est admin (optionnel)
-    # if not current_user.is_admin:
-    #     raise HTTPException(status_code=403, detail="Accès refusé")
-    
+    """Met à jour les paramètres : .env pour IMAP/API, base de données pour les préférences agents."""
+    update_dict = settings_update.model_dump(exclude_none=True)
+
+    # Préférences agents → base de données (utilisateur connecté)
+    for key in AGENT_PREFERENCE_KEYS:
+        if key in update_dict:
+            setattr(current_user, key, update_dict[key] or "")
+    if AGENT_PREFERENCE_KEYS & set(update_dict.keys()):
+        db.commit()
+
+    # Reste → fichier .env
+    env_fields = {k: v for k, v in update_dict.items() if k not in AGENT_PREFERENCE_KEYS}
+    if not env_fields:
+        return {"message": "Paramètres mis à jour avec succès"}
+
     env_file = Path(__file__).parent.parent.parent / ".env"
-    
-    # Lire le fichier .env existant
     env_vars = {}
     if env_file.exists():
-        with open(env_file, 'r') as f:
+        with open(env_file, "r") as f:
             for line in f:
                 line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
                     env_vars[key.strip()] = value.strip()
-    
-    # Mettre à jour les valeurs
-    update_dict = settings_update.model_dump(exclude_none=True)
-    
-    # Mapper les noms de champs vers les noms de variables d'environnement
+
     field_mapping = {
-        'imap_host': 'IMAP_HOST',
-        'imap_port': 'IMAP_PORT',
-        'imap_user': 'IMAP_USER',
-        'imap_password': 'IMAP_PASSWORD',
-        'imap_folder': 'IMAP_FOLDER',
-        'imap_ssl': 'IMAP_SSL',
-        'imap_poll_minutes': 'IMAP_POLL_MINUTES',
-        'agno_model': 'AGNO_MODEL',
-        'agno_api_key': 'AGNO_API_KEY',
-        'openai_api_key': 'OPENAI_API_KEY',
-        'mistral_api_key': 'MISTRAL_API_KEY',
-        'ollama_base_url': 'OLLAMA_BASE_URL',
-        'google_search_api_key': 'GOOGLE_SEARCH_API_KEY',
-        'google_search_engine_id': 'GOOGLE_SEARCH_ENGINE_ID',
-        'bing_search_api_key': 'BING_SEARCH_API_KEY',
-        'search_provider': 'SEARCH_PROVIDER',
+        "imap_host": "IMAP_HOST",
+        "imap_port": "IMAP_PORT",
+        "imap_user": "IMAP_USER",
+        "imap_password": "IMAP_PASSWORD",
+        "imap_folder": "IMAP_FOLDER",
+        "imap_ssl": "IMAP_SSL",
+        "imap_poll_minutes": "IMAP_POLL_MINUTES",
+        "agno_model": "AGNO_MODEL",
+        "agno_api_key": "AGNO_API_KEY",
+        "openai_api_key": "OPENAI_API_KEY",
+        "mistral_api_key": "MISTRAL_API_KEY",
+        "ollama_base_url": "OLLAMA_BASE_URL",
+        "google_search_api_key": "GOOGLE_SEARCH_API_KEY",
+        "google_search_engine_id": "GOOGLE_SEARCH_ENGINE_ID",
+        "bing_search_api_key": "BING_SEARCH_API_KEY",
+        "search_provider": "SEARCH_PROVIDER",
     }
-    
-    for field, value in update_dict.items():
+    for field, value in env_fields.items():
         env_key = field_mapping.get(field)
         if env_key:
-            if isinstance(value, bool):
-                env_vars[env_key] = str(value).lower()
-            else:
-                env_vars[env_key] = str(value)
-    
-    # Écrire le fichier .env
-    with open(env_file, 'w') as f:
+            env_vars[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
+
+    with open(env_file, "w") as f:
         for key, value in env_vars.items():
             f.write(f"{key}={value}\n")
-    
-    return {"message": "Paramètres mis à jour avec succès", "note": "Redémarrez le serveur pour appliquer les changements"}
+    get_settings_config.cache_clear()
+
+    return {"message": "Paramètres mis à jour avec succès", "note": "Certains changements (clés API, modèle) peuvent nécessiter un redémarrage du serveur"}
 
 
 @router.post("/test/{service}")

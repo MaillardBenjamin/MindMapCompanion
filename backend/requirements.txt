@@ -1,26 +1,41 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
+# Web & API
+fastapi==0.128.4
+uvicorn[standard]==0.40.0
+
+# Base de données
+sqlalchemy==2.0.46
+psycopg2-binary==2.9.11
 asyncpg>=0.29.0
 greenlet>=3.0.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
+
+# Validation & config
+pydantic==2.12.5
+pydantic-settings==2.12.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt>=4.0.0
 python-multipart==0.0.6
-alembic==1.12.1
+
+# Migrations
+alembic==1.18.3
+
+# Utilitaires
 email-validator==2.1.0
 pyyaml>=6.0.1
 apscheduler>=3.10.0
 
 # AI Agents
-agno>=1.2.0
-openai>=1.50.0
-ddgs>=0.1.0
+agno==2.4.8
+openai>=2.17.0
+# ddgs : metasearch (google, bing, yahoo, etc.). >=9.0 pour backends multiples (backend="google,bing,yahoo")
+# Dépendances transitives : click, primp, lxml, httpx[brotli,http2,socks], fake-useragent
+ddgs>=9.0.0
+yfinance>=0.2.54
 
 # Web Search APIs
 google-search-results>=2.4.2
+# requests : si chardet est installé, il doit être < 6.0 (sinon RequestsDependencyWarning)
+chardet>=3.0.2,<6
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
@@ -28,6 +43,10 @@ lxml>=4.9.0
 # Job Scraping
 playwright>=1.40.0
 python-slugify>=8.0.0
+# Browser automation with AI
+browser-use>=0.1.0
+langchain-ollama>=0.1.0
+langchain>=0.3.0
 
 # TTS (synthèse vocale)
 gTTS>=2.5.0

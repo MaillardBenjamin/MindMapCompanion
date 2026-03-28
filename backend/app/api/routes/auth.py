@@ -1,5 +1,7 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from app.database import get_db
 from app.schemas.user import UserCreate, UserLogin
 from app.schemas.token import Token, RefreshTokenRequest
@@ -16,6 +18,7 @@ from app.auth.jwt_handler import create_access_token, create_refresh_token, veri
 from datetime import timedelta
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
@@ -56,41 +59,73 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 @router.post("/login", response_model=Token)
 def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
     """Connexion d'un utilisateur"""
-    # Vérifier l'utilisateur
-    user = get_user_by_email(db, email=user_credentials.email)
+    logger.info("[Auth] login: entrée (email=%s)", user_credentials.email)
+    try:
+        logger.info("[Auth] login: appel get_user_by_email...")
+        user = get_user_by_email(db, email=user_credentials.email)
+        logger.info("[Auth] login: get_user_by_email ok, user=%s", user.id if user else None)
+    except (OperationalError, ProgrammingError) as e:
+        logger.exception("[Auth] login: erreur SQL (migration manquante ?): %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de données indisponible ou schéma obsolète. Exécutez: alembic upgrade head",
+        ) from e
+    except Exception as e:
+        logger.exception("[Auth] login: erreur inattendue lors de get_user_by_email: %s", e)
+        raise
+
     if not user:
+        logger.warning("[Auth] login: utilisateur non trouvé (email=%s)", user_credentials.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou mot de passe incorrect"
         )
-    
-    # Vérifier le mot de passe
-    if not verify_password(user_credentials.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect"
-        )
-    
-    # Vérifier que l'utilisateur est actif
+
+    try:
+        logger.info("[Auth] login: vérification mot de passe (user_id=%s)...", user.id)
+        if not verify_password(user_credentials.password, user.hashed_password):
+            logger.warning("[Auth] login: mot de passe incorrect (user_id=%s)", user.id)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Email ou mot de passe incorrect"
+            )
+        logger.info("[Auth] login: mot de passe ok")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[Auth] login: erreur lors de verify_password: %s", e)
+        raise
+
     if not user.is_active:
+        logger.warning("[Auth] login: compte inactif (user_id=%s)", user.id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Compte utilisateur inactif"
         )
-    
-    # Générer les tokens
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email, "user_id": user.id},
-        expires_delta=access_token_expires
-    )
-    refresh_token = create_refresh_token(
-        data={"sub": user.email, "user_id": user.id}
-    )
-    
-    # Sauvegarder le refresh token
-    save_refresh_token(db, user.id, refresh_token)
-    
+
+    try:
+        logger.info("[Auth] login: génération des tokens (user_id=%s)...", user.id)
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.email, "user_id": user.id},
+            expires_delta=access_token_expires
+        )
+        refresh_token = create_refresh_token(
+            data={"sub": user.email, "user_id": user.id}
+        )
+        logger.info("[Auth] login: tokens générés")
+    except Exception as e:
+        logger.exception("[Auth] login: erreur lors de la création des tokens: %s", e)
+        raise
+
+    try:
+        logger.info("[Auth] login: sauvegarde du refresh token...")
+        save_refresh_token(db, user.id, refresh_token)
+        logger.info("[Auth] login: refresh token sauvegardé, succès")
+    except Exception as e:
+        logger.exception("[Auth] login: erreur lors de save_refresh_token: %s", e)
+        raise
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,

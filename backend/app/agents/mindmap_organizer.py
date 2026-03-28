@@ -136,6 +136,10 @@ IMPORTANT CRITIQUE:
 - parent_id doit être un nombre (ID) ou null, PAS un commentaire ou du texte
 - Si tu crées plusieurs nœuds hiérarchiques et que le parent vient d'être créé, utilise son ID numérique réel
 """,
+            output_schema=OrganizeResult,
+            parse_response=True,
+            use_json_mode=True,
+            structured_outputs=True,
         )
     
     def _format_existing_nodes(self, nodes: List[Any]) -> str:
@@ -205,6 +209,183 @@ IMPORTANT CRITIQUE:
             tree_repr += f"  ID {node.id}: '{node.label}' (parent: {node.parent_id or 'racine'})\n"
         
         return tree_repr
+
+    @staticmethod
+    def _clean_json_text(text: str) -> str:
+        """Nettoie un texte supposé JSON (retire commentaires, code fences, virgules traînantes)."""
+        cleaned = (text or "").strip()
+
+        # Extraire le contenu d'un éventuel bloc ```json ... ```
+        fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL | re.IGNORECASE)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+
+        # Supprimer les commentaires JavaScript
+        cleaned = re.sub(r"//.*?$", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+
+        # Nettoyer les virgules avant } ou ]
+        cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _extract_first_json_object(text: str) -> Optional[str]:
+        """
+        Extrait le premier objet JSON équilibré trouvé dans un texte.
+        Gère les accolades présentes dans du texte explicatif autour.
+        """
+        if not text:
+            return None
+
+        start = text.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for i, ch in enumerate(text[start:], start=start):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == "\"":
+                    in_string = False
+                continue
+
+            if ch == "\"":
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        return None
+
+    @staticmethod
+    def _parse_markdown_suggestions(text: str) -> Optional[OrganizeResult]:
+        """
+        Fallback: parse une réponse non-JSON structurée en sections Markdown.
+        Exemple supporté:
+        - Action: create
+        - Label: "..."
+        - Parent_id: 1
+        """
+        if not text:
+            return None
+
+        # Découpe par sections numérotées "1. **...**"
+        blocks = re.findall(
+            r"(?ms)(?:^|\n)\s*\d+\.\s+\*\*.*?\*\*.*?(?=(?:\n\s*\d+\.\s+\*\*|\Z))",
+            text,
+        )
+        if not blocks:
+            blocks = [text]
+
+        suggestions: List[NodeSuggestion] = []
+        for block in blocks:
+            plain = re.sub(r"[`*]", "", block)
+
+            action_match = re.search(r"\bAction\b\s*[:：]\s*(create|update)\b", plain, re.IGNORECASE)
+            label_line_match = re.search(r"\bLabel\b\s*[:：]\s*(.+)", plain, re.IGNORECASE)
+            parent_match = re.search(r"\bParent[_ ]?id\b\s*[:：]\s*(null|\d+)", plain, re.IGNORECASE)
+            node_match = re.search(r"\bNode[_ ]?id\b\s*[:：]\s*(null|\d+)", plain, re.IGNORECASE)
+            reason_match = re.search(r"\bRaison\b\s*[:：]\s*(.+)", plain, re.IGNORECASE)
+
+            if not action_match or not label_line_match:
+                continue
+
+            action = action_match.group(1).lower().strip()
+            label_line = label_line_match.group(1).strip().splitlines()[0].strip()
+            # Si la valeur est entre guillemets doubles, conserver le contenu entre guillemets
+            quoted_double = re.search(r'"([^"]+)"', label_line)
+            if quoted_double:
+                label = quoted_double.group(1).strip()
+            else:
+                # Nettoyage simple: retirer les parenthèses explicatives de fin
+                label = re.sub(r"\s*\([^)]*\)\s*$", "", label_line).strip(" -")
+
+            if not label:
+                continue
+
+            parent_id: Optional[int] = None
+            if parent_match:
+                raw_parent = parent_match.group(1).strip().lower()
+                if raw_parent != "null":
+                    try:
+                        parent_id = int(raw_parent)
+                    except ValueError:
+                        parent_id = None
+
+            node_id: Optional[int] = None
+            if node_match:
+                raw_node = node_match.group(1).strip().lower()
+                if raw_node != "null":
+                    try:
+                        node_id = int(raw_node)
+                    except ValueError:
+                        node_id = None
+
+            reasoning = reason_match.group(1).strip() if reason_match else "Suggestion extraite en mode fallback."
+            description = label
+
+            suggestions.append(
+                NodeSuggestion(
+                    action=action,
+                    node_id=node_id if action == "update" else None,
+                    parent_id=parent_id if action == "create" else None,
+                    label=label,
+                    description=description,
+                    reasoning=reasoning,
+                )
+            )
+
+        if not suggestions:
+            return None
+
+        return OrganizeResult(
+            suggestions=suggestions,
+            summary="Suggestions extraites depuis une réponse non-JSON (mode fallback).",
+        )
+
+    def _parse_agent_response(self, content: Any) -> OrganizeResult:
+        """Parse la réponse de l'agent avec fallback robuste (JSON strict -> extraction -> markdown)."""
+        if isinstance(content, OrganizeResult):
+            return content
+
+        if isinstance(content, dict):
+            return OrganizeResult(**content)
+
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("Réponse vide de l'agent.")
+
+        # 1) Essai direct sur contenu nettoyé
+        cleaned = self._clean_json_text(text)
+        try:
+            parsed = json.loads(cleaned)
+            return OrganizeResult(**parsed)
+        except Exception:
+            pass
+
+        # 2) Essai sur premier objet JSON trouvé dans le texte
+        extracted = self._extract_first_json_object(text)
+        if extracted:
+            try:
+                parsed = json.loads(self._clean_json_text(extracted))
+                return OrganizeResult(**parsed)
+            except Exception:
+                pass
+
+        # 3) Fallback Markdown/suggestions textuelles
+        fallback = self._parse_markdown_suggestions(text)
+        if fallback:
+            logger.warning("[MindmapOrganizer] Réponse non-JSON parsée en mode fallback.")
+            return fallback
+
+        raise ValueError("Réponse non parsable (ni JSON valide, ni suggestions exploitables).")
     
     async def execute(
         self,
@@ -286,26 +467,23 @@ INSTRUCTIONS CRITIQUES:
             
             # Exécuter l'agent
             response = self.agent.run(prompt)
-            
-            logger.info(f"[MindmapOrganizer] Réponse reçue de l'agent (longueur: {len(response.content)} caractères)")
+            raw_content = getattr(response, "content", response)
+            raw_as_text = raw_content if isinstance(raw_content, str) else json.dumps(
+                raw_content if isinstance(raw_content, dict) else str(raw_content),
+                ensure_ascii=False,
+            )
+
+            logger.info(f"[MindmapOrganizer] Réponse reçue de l'agent (longueur: {len(raw_as_text)} caractères)")
             logger.info(f"[MindmapOrganizer] ========== SORTIE COMPLÈTE DU MODÈLE IA ==========")
-            logger.info(f"[MindmapOrganizer] {response.content}")
+            logger.info(f"[MindmapOrganizer] {raw_as_text}")
             logger.info(f"[MindmapOrganizer] =================================================")
-            
-            # Nettoyer le JSON en supprimant les commentaires JavaScript
-            cleaned_content = response.content
-            # Supprimer les commentaires de ligne (// ...)
-            cleaned_content = re.sub(r'//.*?$', '', cleaned_content, flags=re.MULTILINE)
-            # Supprimer les commentaires de bloc (/* ... */)
-            cleaned_content = re.sub(r'/\*.*?\*/', '', cleaned_content, flags=re.DOTALL)
-            # Nettoyer les virgules en fin de ligne avant les accolades/fermetures
-            cleaned_content = re.sub(r',\s*([}\]])', r'\1', cleaned_content)
-            
-            # Parser la réponse JSON
+
+            # Parser la réponse (JSON strict puis fallback)
             try:
-                result_data = json.loads(cleaned_content)
-                logger.info(f"[MindmapOrganizer] JSON parsé avec succès: {len(result_data.get('suggestions', []))} suggestions")
-                result = OrganizeResult(**result_data)
+                result = self._parse_agent_response(raw_content)
+                logger.info(
+                    f"[MindmapOrganizer] Réponse parsée avec succès: {len(result.suggestions)} suggestions"
+                )
                 
                 # Logger chaque suggestion
                 for idx, suggestion in enumerate(result.suggestions):
@@ -313,9 +491,9 @@ INSTRUCTIONS CRITIQUES:
                               f"node_id={suggestion.node_id}, parent_id={suggestion.parent_id}, "
                               f"label='{suggestion.label}'")
                     
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"[MindmapOrganizer] Erreur lors du parsing JSON: {e}")
-                logger.error(f"[MindmapOrganizer] Contenu reçu: {response.content[:500]}")
+            except ValueError as e:
+                logger.error(f"[MindmapOrganizer] Erreur lors du parsing de la réponse: {e}")
+                logger.error(f"[MindmapOrganizer] Contenu reçu: {raw_as_text[:500]}")
                 return AgentResponse(
                     success=False,
                     message="Erreur lors du parsing de la réponse de l'agent",

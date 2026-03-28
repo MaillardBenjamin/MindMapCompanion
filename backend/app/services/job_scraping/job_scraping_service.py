@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from app.services.job_scraping.scraper_config_parser import ScraperConfigParser, ScraperConfig
 from app.services.job_scraping.playwright_executor import PlaywrightExecutor
+from app.services.job_scraping.browser_use_executor import BrowserUseExecutor
 from app.services.job_scraping.storage_manager import StorageManager, StorageConfig, JobOffer
 
 logger = logging.getLogger(__name__)
@@ -115,11 +116,17 @@ class JobScrapingService:
             if existing_ids:
                 logger.info("[JobScrapingService] %d annonces déjà en base, scraping des nouvelles uniquement", len(existing_ids))
             
-            # Créer et exécuter l'exécuteur Playwright
-            logger.info("[JobScrapingService] 🚀 Exécution Playwright pour %s...", config.name)
-            executor = PlaywrightExecutor(config, context=context)
+            # Créer et exécuter l'exécuteur approprié (Playwright ou Browser-Use)
+            executor_type = config.executor_type
+            logger.info("[JobScrapingService] 🚀 Exécution %s pour %s...", executor_type, config.name)
+            
+            if executor_type == "browser-use":
+                executor = BrowserUseExecutor(config, context=context)
+            else:
+                executor = PlaywrightExecutor(config, context=context)
+            
             offers = await executor.execute(search_params)
-            logger.info("[JobScrapingService] ✅ Playwright terminé pour %s: %d offres", config.name, len(offers))
+            logger.info("[JobScrapingService] ✅ %s terminé pour %s: %d offres", executor_type, config.name, len(offers))
             
             # Sauvegarder les offres si demandé
             if save_to_files and offers:

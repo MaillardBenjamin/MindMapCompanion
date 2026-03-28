@@ -484,6 +484,90 @@ export const triggersApi = {
 
     return handleResponse<TriggerManualExecuteResponse>(response);
   },
+
+  /**
+   * Lance un trigger (agent) en mode stream. Appelle onChunk à chaque chunk de texte,
+   * onStatus pour les messages de statut (ex. "Envoi du prompt…", "Appel d'un outil…"),
+   * onDone avec les métadonnées finales, ou onError en cas d'erreur.
+   */
+  executeStream: async (
+    triggerId: string,
+    data: TriggerManualExecuteRequest,
+    callbacks: {
+      onChunk: (content: string) => void;
+      onStatus?: (message: string) => void;
+      onToolResult?: (toolName: string, resultPreview: string) => void;
+      onDone?: (final: { output_raw?: string; execution_time_ms?: number }) => void;
+      onError?: (message: string) => void;
+    }
+  ): Promise<void> => {
+    const response = await fetchWithAuth(buildUrl(API_ENDPOINTS.TRIGGERS.EXECUTE_STREAM(triggerId)), {
+      method: 'POST',
+      body: JSON.stringify(data),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: response.statusText }));
+      callbacks.onError?.(err.detail || response.statusText);
+      return;
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      callbacks.onError?.('Stream non disponible');
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const json = JSON.parse(line.slice(6)) as {
+                content?: string;
+                done?: boolean;
+                output_raw?: string;
+                execution_time_ms?: number;
+                error?: string;
+                event?: string;
+                message?: string;
+                tool_name?: string;
+                result_preview?: string;
+              };
+              if (json.error) {
+                callbacks.onError?.(json.error);
+                return;
+              }
+              if (json.event === 'status' && json.message !== undefined) {
+                callbacks.onStatus?.(json.message);
+              }
+              if (json.event === 'tool_result' && json.tool_name !== undefined) {
+                callbacks.onToolResult?.(json.tool_name, json.result_preview ?? '');
+              }
+              if (json.content !== undefined) callbacks.onChunk(json.content);
+              if (json.done) {
+                callbacks.onDone?.({
+                  output_raw: json.output_raw,
+                  execution_time_ms: json.execution_time_ms,
+                });
+                return;
+              }
+            } catch {
+              // ignorer les lignes data invalides
+            }
+          }
+        }
+      }
+      callbacks.onDone?.({});
+    } finally {
+      reader.releaseLock();
+    }
+  },
 };
 
 // Service API pour les actions
@@ -782,10 +866,19 @@ export interface SettingsResponse {
   agno_api_key: string;
   openai_api_key: string;
   mistral_api_key: string;
+  ollama_base_url?: string;
   google_search_api_key: string;
   google_search_engine_id: string;
   bing_search_api_key: string;
   search_provider: string;
+  /** Langue des réponses des agents (fr, en, etc.) */
+  agent_langue: string;
+  /** Tutoiement (tu) ou vouvoiement (vous) */
+  agent_adresse: string;
+  /** Prénom pour personnaliser les réponses */
+  agent_prenom: string;
+  /** Ton des réponses (formel, amical, etc.) */
+  agent_ton: string;
 }
 
 export interface SettingsUpdate {
@@ -800,10 +893,15 @@ export interface SettingsUpdate {
   agno_api_key?: string;
   openai_api_key?: string;
   mistral_api_key?: string;
+  ollama_base_url?: string;
   google_search_api_key?: string;
   google_search_engine_id?: string;
   bing_search_api_key?: string;
   search_provider?: string;
+  agent_langue?: string;
+  agent_adresse?: string;
+  agent_prenom?: string;
+  agent_ton?: string;
 }
 
 export interface TestConnectionResponse {

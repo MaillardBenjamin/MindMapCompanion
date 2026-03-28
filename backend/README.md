@@ -99,7 +99,11 @@ alembic upgrade head
 ## Démarrage du serveur
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Avec exclusion de venv pour éviter les reloads en boucle (WatchFiles ne surveille pas venv/)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --reload-exclude 'venv/*'
+
+# Ou utiliser le script :
+./run_dev.sh
 ```
 
 Le serveur sera accessible sur `http://localhost:8000`
@@ -253,10 +257,12 @@ alembic downgrade -1
 
 ## Développement
 
-Pour le développement avec rechargement automatique :
+Pour le développement avec rechargement automatique (sans surveiller `venv/`, pour éviter les redémarrages intempestifs) :
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --reload-exclude 'venv/*'
+# ou
+./run_dev.sh
 ```
 
 ## Production

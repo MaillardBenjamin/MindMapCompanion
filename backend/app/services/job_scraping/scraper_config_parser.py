@@ -123,6 +123,9 @@ class ScraperConfig:
     rate_limiting: Dict[str, Any] = field(default_factory=dict)
     error_handling: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Support pour browser-use avec instructions en langage naturel
+    executor_type: str = "playwright"  # "playwright" ou "browser-use"
+    natural_language_instructions: Optional[str] = None
 
 
 class ScraperConfigParser:
@@ -211,6 +214,8 @@ class ScraperConfigParser:
             body = content[frontmatter_match.end():]
         
         # Créer la configuration de base
+        executor_type = frontmatter.get("executor_type", "playwright")
+        
         config = ScraperConfig(
             name=frontmatter.get("name", "Unknown Scraper"),
             site_url=frontmatter.get("site_url", ""),
@@ -221,14 +226,46 @@ class ScraperConfigParser:
             rate_limiting=frontmatter.get("rate_limiting", {}),
             error_handling=frontmatter.get("error_handling", {}),
             metadata=frontmatter.get("metadata", {}),
+            executor_type=executor_type,
+            natural_language_instructions=frontmatter.get("instructions"),
         )
         
-        # Parser les étapes depuis le corps du markdown
-        config.steps = self._parse_steps(body)
-        
-        logger.info(f"[ScraperConfigParser] Configuration parsée: {config.name} avec {len(config.steps)} étapes")
+        # Parser les étapes ou instructions selon le type d'executor
+        if executor_type == "browser-use":
+            # Pour browser-use, extraire les instructions en langage naturel du corps
+            if not config.natural_language_instructions:
+                config.natural_language_instructions = self._extract_natural_language_instructions(body)
+            logger.info(f"[ScraperConfigParser] Configuration browser-use parsée: {config.name}")
+        else:
+            # Pour playwright, parser les étapes YAML
+            config.steps = self._parse_steps(body)
+            logger.info(f"[ScraperConfigParser] Configuration playwright parsée: {config.name} avec {len(config.steps)} étapes")
         
         return config
+    
+    def _extract_natural_language_instructions(self, body: str) -> str:
+        """
+        Extrait les instructions en langage naturel depuis le corps du markdown.
+        
+        Pour browser-use, les instructions sont le contenu markdown lui-même,
+        excluant les blocs de code YAML (qui sont pour playwright).
+        
+        Args:
+            body: Corps du markdown (après le frontmatter)
+        
+        Returns:
+            Instructions en langage naturel
+        """
+        # Retirer les blocs de code YAML (qui sont des instructions Playwright)
+        yaml_pattern = r'```yaml\n.*?\n```'
+        cleaned_body = re.sub(yaml_pattern, '', body, flags=re.DOTALL)
+        
+        # Nettoyer et retourner
+        instructions = cleaned_body.strip()
+        
+        logger.debug(f"[ScraperConfigParser] Instructions en langage naturel extraites: {len(instructions)} caractères")
+        
+        return instructions
     
     def _parse_steps(self, body: str) -> List[PlaywrightStep]:
         """
@@ -283,7 +320,12 @@ class ScraperConfigParser:
         if not config.site_url:
             errors.append("L'URL du site est requise")
         
-        if not config.steps:
+        # Pour browser-use : instructions en langage naturel requises
+        # Pour playwright : au moins une étape requise
+        if config.executor_type == "browser-use":
+            if not config.natural_language_instructions or not config.natural_language_instructions.strip():
+                errors.append("Les instructions en langage naturel sont requises (executor_type: browser-use)")
+        elif not config.steps:
             errors.append("Au moins une étape est requise")
         
         # Valider les étapes

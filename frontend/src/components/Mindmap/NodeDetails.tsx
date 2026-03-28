@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   Box,
@@ -155,6 +155,10 @@ const NodeDetails = () => {
   const [isExecuting, setIsExecuting] = useState(false);
   const [executeResult, setExecuteResult] = useState<any>(null);
   const [executeError, setExecuteError] = useState<string>('');
+  const [streamingText, setStreamingText] = useState('');
+  const [streamingStatus, setStreamingStatus] = useState('');
+  const [streamingToolResults, setStreamingToolResults] = useState<Array<{ toolName: string; resultPreview: string }>>([]);
+  const streamContainerRef = useRef<HTMLDivElement>(null);
 
   // Synchroniser editLabel, editDescription et editStatus avec selectedNode quand il change
   useEffect(() => {
@@ -164,6 +168,13 @@ const NodeDetails = () => {
       setEditStatus(selectedNode.data.status || 'inbox');
     }
   }, [selectedNode?.id, selectedNode?.data.label, selectedNode?.data.description, selectedNode?.data.status]);
+
+  // Scroll automatique vers le bas pendant le stream (trigger manuel)
+  useEffect(() => {
+    if (streamContainerRef.current && isExecuting) {
+      streamContainerRef.current.scrollTop = streamContainerRef.current.scrollHeight;
+    }
+  }, [streamingText, streamingStatus, streamingToolResults, isExecuting]);
 
   // Ne pas rendre AnimatePresence si aucun nœud n'est sélectionné
   if (!selectedNode) {
@@ -316,7 +327,7 @@ const NodeDetails = () => {
     setTaskType(taskType);
     setSelectedAgent(taskType === 'agent' ? String(taskId || '') : '');
     setSelectedAction(taskType === 'action' ? String(taskId || '') : '');
-    setOutputType(config.output_type || 'screen');
+    setOutputType('screen'); // Par défaut « À l'écran » pour un lancement manuel
     setInputText(config.input_text || '');
     setAgentOptions(config.agent_options || {});
     // La config peut avoir email_config ou email_to/email_subject directement
@@ -331,6 +342,9 @@ const NodeDetails = () => {
     setSelectedTriggerForExecute(null);
     setExecuteResult(null);
     setExecuteError('');
+    setStreamingText('');
+    setStreamingStatus('');
+    setStreamingToolResults([]);
   };
 
   const handleExecuteTrigger = async () => {
@@ -355,72 +369,84 @@ const NodeDetails = () => {
 
     setIsExecuting(true);
     setExecuteError('');
+    setExecuteResult(null);
+    setStreamingText('');
+    setStreamingStatus('');
+    setStreamingToolResults([]);
+
+    const effectiveInputText = taskType === 'agent' && agentOptions.input_text != null && agentOptions.input_text !== ''
+      ? String(agentOptions.input_text)
+      : (inputText || undefined);
+    const request: TriggerManualExecuteRequest = {
+      trigger_id: triggerId,
+      task_type: taskType,
+      task_id: taskId,
+      output_type: outputType,
+      input_text: effectiveInputText,
+      agent_options: taskType === 'agent' && Object.keys(agentOptions).length > 0 ? agentOptions : undefined,
+      email_config: (outputType === 'email' || outputType === 'audio_email') ? {
+        to: emailTo,
+        subject: emailSubject || undefined,
+      } : undefined,
+    };
+
+    const useStream = taskType === 'agent' && outputType === 'screen';
+    const agentName = taskType === 'agent' ? availableAgents.find(a => String(a.id) === selectedAgent)?.name : undefined;
 
     try {
-      const effectiveInputText = taskType === 'agent' && agentOptions.input_text != null && agentOptions.input_text !== ''
-        ? String(agentOptions.input_text)
-        : (inputText || undefined);
-      const request: TriggerManualExecuteRequest = {
-        trigger_id: triggerId,
-        task_type: taskType,
-        task_id: taskId,
-        output_type: outputType,
-        input_text: effectiveInputText,
-        agent_options: taskType === 'agent' && Object.keys(agentOptions).length > 0 ? agentOptions : undefined,
-        email_config: (outputType === 'email' || outputType === 'audio_email') ? {
-          to: emailTo,
-          subject: emailSubject || undefined,
-        } : undefined,
-      };
-
       console.log('[NodeDetails] 🚀 Démarrage de l\'exécution du trigger:', {
         triggerId,
         taskType,
         taskId,
-        inputText,
         outputType,
+        useStream,
       });
 
-      const result = await triggersApi.execute(triggerId, request);
-      
-      console.log('[NodeDetails] ✅ Résultat de l\'exécution:', result);
-      
-      // Afficher les détails dans la console
-      if (result.output) {
-        console.group('📊 Détails de l\'exécution');
-        if (result.output.agent_name) {
-          console.log('🤖 Agent:', result.output.agent_name);
+      if (useStream) {
+        let streamedBuffer = '';
+        await triggersApi.executeStream(triggerId, request, {
+          onChunk: (content) => {
+            streamedBuffer += content;
+            setStreamingText((prev) => prev + content);
+          },
+          onStatus: (message) => setStreamingStatus((prev) => (prev ? `${prev}\n${message}` : message)),
+          onToolResult: (toolName, resultPreview) =>
+            setStreamingToolResults((prev) => [...prev, { toolName, resultPreview }]),
+          onDone: (final) => {
+            const finalOutput = (final.output_raw && final.output_raw.trim().length > 0)
+              ? final.output_raw
+              : streamedBuffer;
+            setExecuteResult({
+              success: true,
+              message: 'Exécution terminée',
+              output: {
+                output_raw: finalOutput,
+                execution_time_ms: final.execution_time_ms,
+                agent_name: agentName,
+                input_text: effectiveInputText,
+              },
+            });
+            setStreamingText('');
+            setStreamingStatus('');
+            setStreamingToolResults([]);
+          },
+          onError: (message) => setExecuteError(message),
+        });
+      } else {
+        const result = await triggersApi.execute(triggerId, request);
+        console.log('[NodeDetails] ✅ Résultat de l\'exécution:', result);
+        if (result.output) {
+          console.group('📊 Détails de l\'exécution');
+          if (result.output.execution_time_ms) {
+            console.log(`⏱️  Temps d'exécution: ${result.output.execution_time_ms}ms`);
+          }
+          console.groupEnd();
         }
-        if (result.output.input_text) {
-          console.log('📥 Input text:', result.output.input_text);
-        }
-        if (result.output.prompt_used) {
-          console.log('📝 Prompt utilisé:', result.output.prompt_used);
-        }
-        console.group('📤 Sortie');
-        console.log('Sortie brute:', result.output.output_raw);
-        if (result.output.output_parsed) {
-          console.log('Sortie parsée:', result.output.output_parsed);
-        }
-        console.groupEnd();
-        if (result.output.execution_time_ms) {
-          console.log(`⏱️  Temps d'exécution: ${result.output.execution_time_ms}ms`);
-        }
-        console.groupEnd();
+        setExecuteResult(result);
       }
-      
-      setExecuteResult(result);
-      
-      // Ne pas fermer automatiquement - laisser l'utilisateur voir le résultat
-      // L'utilisateur peut fermer manuellement avec le bouton "Fermer"
     } catch (error: any) {
       const errorMessage = error.detail || error.message || 'Erreur lors de l\'exécution';
       console.error('[NodeDetails] ❌ Erreur lors de l\'exécution:', error);
-      console.error('[NodeDetails] Détails de l\'erreur:', {
-        message: errorMessage,
-        error: error,
-        stack: error.stack,
-      });
       setExecuteError(errorMessage);
     } finally {
       setIsExecuting(false);
@@ -1127,6 +1153,105 @@ const NodeDetails = () => {
           {/* Résultat ou erreur */}
           {executeError && (
             <Alert severity="error">{executeError}</Alert>
+          )}
+          {/* Statut, appels d'outils et texte du modèle au fur et à mesure (streaming) */}
+          {isExecuting && (streamingStatus || streamingText || streamingToolResults.length > 0) && (
+            <Box
+              ref={streamContainerRef}
+              sx={{
+                mt: 2,
+                p: 2,
+                bgcolor: 'rgba(0, 217, 255, 0.06)',
+                borderRadius: 1,
+                border: '1px solid rgba(0, 217, 255, 0.2)',
+                maxHeight: 420,
+                overflow: 'auto',
+              }}
+            >
+              {/* Log d'activité (statuts successifs) */}
+              {streamingStatus && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: '#00D9FF' }}>
+                    ⏳ Activité
+                  </Typography>
+                  <Box
+                    component="ul"
+                    sx={{
+                      m: 0,
+                      pl: 2,
+                      py: 0.5,
+                      fontSize: '0.75rem',
+                      color: 'text.secondary',
+                      lineHeight: 1.6,
+                      '& li': { mb: 0.25 },
+                    }}
+                  >
+                    {streamingStatus.split('\n').filter(Boolean).map((line, idx) => (
+                      <li key={idx}>{line}</li>
+                    ))}
+                  </Box>
+                </Box>
+              )}
+              {/* Appels aux outils et réponses */}
+              {streamingToolResults.length > 0 && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: '#00D9FF' }}>
+                    🔧 Outils utilisés
+                  </Typography>
+                  {streamingToolResults.map((tr, idx) => (
+                    <Box
+                      key={idx}
+                      sx={{
+                        mt: 0.5,
+                        p: 1.25,
+                        bgcolor: 'rgba(0, 217, 255, 0.06)',
+                        borderRadius: 0.5,
+                        borderLeft: '3px solid rgba(0, 217, 255, 0.5)',
+                      }}
+                    >
+                      <Typography variant="caption" sx={{ fontWeight: 600, color: '#00D9FF' }}>
+                        {tr.toolName}
+                      </Typography>
+                      <Typography
+                        component="pre"
+                        sx={{
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          fontSize: '0.75rem',
+                          lineHeight: 1.4,
+                          color: 'text.secondary',
+                          mt: 0.25,
+                          maxHeight: 100,
+                          overflow: 'auto',
+                        }}
+                      >
+                        {tr.resultPreview}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              )}
+              {/* Réponse du modèle (contenu principal) */}
+              <Box>
+                <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: '#00D9FF' }}>
+                  📝 Réponse {streamingText ? '(en cours…)' : ''}
+                </Typography>
+                <Typography
+                  component="pre"
+                  sx={{
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontSize: '0.875rem',
+                    lineHeight: 1.6,
+                    color: 'text.primary',
+                    fontFamily: 'inherit',
+                    m: 0,
+                  }}
+                >
+                  {streamingText}
+                </Typography>
+              </Box>
+            </Box>
           )}
           {executeResult && (
             <Box sx={{ mt: 1 }}>

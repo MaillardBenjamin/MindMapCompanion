@@ -13,6 +13,12 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Préférences de réponse des agents (Paramètres → Réponses des agents)
+    agent_langue = Column(String(10), default="fr", nullable=False)
+    agent_adresse = Column(String(10), default="", nullable=True)  # "tu" ou "vous"
+    agent_prenom = Column(String(120), default="", nullable=True)
+    agent_ton = Column(String(40), default="", nullable=True)  # formel, amical, etc.
+
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
     mindmaps = relationship("Mindmap", back_populates="user", cascade="all, delete-orphan")
     configurable_agents = relationship("ConfigurableAgent", back_populates="user", cascade="all, delete-orphan")

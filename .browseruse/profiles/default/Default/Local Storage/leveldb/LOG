@@ -1,0 +1,9 @@
+2026/02/11-22:42:11.995 1b36917 Reusing MANIFEST /Users/benjaminmaillard/Documents/PersonalAssistant/.browseruse/profiles/default/Default/Local Storage/leveldb/MANIFEST-000001
+2026/02/11-22:42:11.996 1b36917 Recovering log #14
+2026/02/11-22:42:11.997 1b36917 Level-0 table #17: started
+2026/02/11-22:42:12.001 1b36917 Level-0 table #17: 78655 bytes OK
+2026/02/11-22:42:12.002 1b36917 Recovering log #16
+2026/02/11-22:42:12.002 1b36917 Reusing old log /Users/benjaminmaillard/Documents/PersonalAssistant/.browseruse/profiles/default/Default/Local Storage/leveldb/000016.log 
+2026/02/11-22:42:12.004 1b36917 Delete type=0 #14
+2026/02/11-22:42:18.654 1b36917 Level-0 table #19: started
+2026/02/11-22:42:18.657 1b36917 Level-0 table #19: 78656 bytes OK

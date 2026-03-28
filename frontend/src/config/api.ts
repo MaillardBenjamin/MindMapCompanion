@@ -1,5 +1,8 @@
 // Configuration de l'API backend
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_URL ||
+  'http://localhost:8001';
 
 // Endpoints de l'API
 export const API_ENDPOINTS = {
@@ -33,6 +36,7 @@ export const API_ENDPOINTS = {
     UPDATE: (id: number) => `/api/triggers/${id}`,
     DELETE: (id: number) => `/api/triggers/${id}`,
     EXECUTE: (id: string) => `/api/triggers/${id}/execute`,
+    EXECUTE_STREAM: (id: string) => `/api/triggers/${id}/execute/stream`,
   },
   CONFIGURABLE_AGENTS: {
     LIST: '/api/configurable-agents',

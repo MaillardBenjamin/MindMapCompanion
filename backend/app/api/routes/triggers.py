@@ -1,6 +1,7 @@
 import base64
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
@@ -109,6 +110,58 @@ def delete_trigger(
             detail="Trigger introuvable"
         )
     return None
+
+
+@router.post("/{trigger_id}/execute/stream")
+async def execute_trigger_manually_stream(
+    trigger_id: str,
+    payload: TriggerManualExecuteRequest,
+    db_sync: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Lance un trigger (agent) en mode stream : renvoie du SSE pour afficher la réponse au fur et à mesure.
+    Réservé à task_type="agent". Pour les actions, utiliser POST /{trigger_id}/execute.
+    """
+    try:
+        trigger_id_int = int(trigger_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format d'ID de trigger invalide")
+
+    trigger = crud_mindmap.get_trigger(db_sync, trigger_id_int, current_user.id)
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Trigger introuvable")
+    if not trigger.enabled:
+        raise HTTPException(status_code=400, detail="Le trigger est désactivé")
+    if payload.task_type != "agent":
+        raise HTTPException(status_code=400, detail="Le stream est uniquement pour task_type=agent")
+
+    from app.crud.configurable_agent import get_agent_by_id
+    agent = get_agent_by_id(db_sync, int(payload.task_id), current_user.id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent configurable introuvable")
+
+    input_text = payload.input_text
+    if not input_text:
+        node = crud_mindmap.get_node(db_sync, trigger.node_id, current_user.id)
+        if node:
+            input_text = node.description or node.label or ""
+
+    async def event_stream():
+        async for chunk in configurable_agent_service.execute_agent_stream(
+            db=db_sync,
+            agent_id=agent.id,
+            user_id=current_user.id,
+            input_text=input_text or "",
+            options=payload.agent_options or {},
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{trigger_id}/execute", response_model=TriggerManualExecuteResponse)
