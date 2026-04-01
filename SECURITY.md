@@ -4,7 +4,7 @@
 
 Si vous découvrez une vulnérabilité de sécurité, **ne créez pas d'issue publique**. Contactez-nous en privé :
 
-- **Email** : security@example.com
+- **Email** : dpo@oenotrac.fr
 - **PGP Key** : [À ajouter]
 
 Nous répondrons dans les **48 heures** et travaillerons avec vous pour résoudre le problème avant toute divulgation publique.
@@ -198,4 +198,4 @@ Les mises à jour de sécurité critiques seront publiées dans :
 ---
 
 **Dernière mise à jour** : 2026-01-22  
-**Contact sécurité** : security@example.com
+**Contact sécurité** : dpo@oenotrac.fr

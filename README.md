@@ -135,8 +135,8 @@ PersonalAssistant/
 ### 1. Cloner le dépôt
 
 ```bash
-git clone https://github.com/votre-username/PersonalAssistant.git
-cd PersonalAssistant
+git clone https://github.com/MaillardBenjamin/MindMapCompanion.git
+cd MindMapCompanion
 ```
 
 ### 2. Configuration du backend
@@ -344,7 +344,7 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 - [Material-UI](https://mui.com/) - Composants UI magnifiques
 - [Agno Framework](https://github.com/agno-ai/agno) - Framework pour agents IA
 - [MindMapCompanion](https://github.com/MaillardBenjamin/MindMapCompanion) - Projet inspirant pour les fonctionnalités de mindmap
-- Tous les [contributeurs](https://github.com/votre-username/PersonalAssistant/graphs/contributors) qui ont rendu ce projet possible
+- Tous les [contributeurs](https://github.com/MaillardBenjamin/MindMapCompanion/graphs/contributors) qui ont rendu ce projet possible
 
 ## 🔗 Projets liés
 
@@ -353,9 +353,9 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 ## 📞 Support
 
 - 📖 [Documentation complète](documentation/INDEX.md)
-- 🐛 [Signaler un bug](https://github.com/votre-username/PersonalAssistant/issues)
-- 💡 [Suggérer une fonctionnalité](https://github.com/votre-username/PersonalAssistant/issues)
-- 💬 [Discussions](https://github.com/votre-username/PersonalAssistant/discussions)
+- 🐛 [Signaler un bug](https://github.com/MaillardBenjamin/MindMapCompanion/issues)
+- 💡 [Suggérer une fonctionnalité](https://github.com/MaillardBenjamin/MindMapCompanion/issues)
+- 💬 [Discussions](https://github.com/MaillardBenjamin/MindMapCompanion/discussions)
 
 ## ⭐ Étoiles
 

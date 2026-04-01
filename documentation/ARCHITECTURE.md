@@ -7,7 +7,7 @@
 ### Stack technologique
 
 - **Backend** : FastAPI (Python 3.12+)
-- **Frontend** : React 18 + TypeScript + Vite
+- **Frontend** : React 19 + TypeScript + Vite
 - **Base de données** : PostgreSQL avec SQLAlchemy (ORM)
 - **Authentification** : JWT (JSON Web Tokens)
 - **Scheduling** : APScheduler (tâches planifiées)
