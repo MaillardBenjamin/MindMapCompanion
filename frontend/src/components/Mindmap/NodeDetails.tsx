@@ -193,6 +193,186 @@ function isCronLikeTrigger(triggerType: string): boolean {
   return triggerType === 'cron' || triggerType === 'schedule';
 }
 
+const IMPORTANCE_FR: Record<string, string> = {
+  high: 'élevée',
+  medium: 'moyenne',
+  low: 'faible',
+};
+const DIRECTION_FR: Record<string, string> = {
+  emerging: 'émergente',
+  growing: 'en croissance',
+  declining: 'en déclin',
+  stable: 'stable',
+};
+const PRIORITY_FR: Record<string, string> = {
+  urgent: 'urgente',
+  high: 'élevée',
+  medium: 'moyenne',
+  low: 'faible',
+};
+const RELIABILITY_FR: Record<string, string> = {
+  high: 'élevée',
+  medium: 'moyenne',
+  low: 'faible',
+};
+const TYPE_FR: Record<string, string> = {
+  news: 'actualité',
+  blog: 'blog',
+  social: 'réseau social',
+  official: 'officiel',
+  research: 'recherche',
+  other: 'autre',
+};
+
+function shouldRenderNewsMonitorMarkdown(parsed: Record<string, unknown>): boolean {
+  const es = parsed.executive_summary;
+  if (typeof es === 'string' && es.trim()) return true;
+  const kf = parsed.key_findings;
+  if (Array.isArray(kf) && kf.length > 0) return true;
+  const tr = parsed.trends;
+  if (Array.isArray(tr) && tr.length > 0) return true;
+  const src = parsed.sources;
+  if (Array.isArray(src) && src.length > 0) return true;
+  const rec = parsed.recommendations;
+  if (Array.isArray(rec) && rec.length > 0) return true;
+  const ns = parsed.next_steps;
+  if (typeof ns === 'string' && ns.trim()) return true;
+  const rd = parsed.report_date ?? parsed.rapport_date;
+  if (typeof rd === 'string' && rd.trim()) return true;
+  return false;
+}
+
+function indentBody(text: string, prefix: string): string {
+  return text.replace(/\n/g, `\n${prefix}`);
+}
+
+/** Rendu markdown FR pour la sortie structurée type News Monitor (aligné sur le backend). */
+function newsMonitorParsedToMarkdown(parsed: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  const theme = parsed.theme;
+  if (typeof theme === 'string' && theme.trim()) {
+    parts.push(`## ${theme.trim()}\n\n`);
+  }
+
+  const es = parsed.executive_summary;
+  if (typeof es === 'string' && es.trim()) {
+    parts.push('### Résumé exécutif\n\n', es.trim(), '\n\n');
+  }
+
+  const kf = parsed.key_findings;
+  if (Array.isArray(kf) && kf.length > 0) {
+    parts.push('### Points clés\n\n');
+    for (const item of kf) {
+      if (!item || typeof item !== 'object') continue;
+      const it = item as Record<string, unknown>;
+      const title = typeof it.title === 'string' ? it.title.trim() : '';
+      const bodyRaw = it.description ?? it.summary;
+      const body = typeof bodyRaw === 'string' ? bodyRaw.trim() : '';
+      if (title) parts.push(`- **${title}**`);
+      else if (body) parts.push('- *(Sans titre)*');
+      if (body) parts.push(`\n\n  ${indentBody(body, '  ')}\n`);
+      else if (title) parts.push('\n');
+      const meta: string[] = [];
+      if (typeof it.importance === 'string' && it.importance.trim()) {
+        const im = it.importance.trim();
+        meta.push(`Importance : ${IMPORTANCE_FR[im] ?? im}`);
+      }
+      if (typeof it.source === 'string' && it.source.trim()) {
+        meta.push(`Source : ${it.source.trim()}`);
+      }
+      if (typeof it.date === 'string' && it.date.trim()) {
+        meta.push(`Date : ${it.date.trim()}`);
+      }
+      if (meta.length) parts.push(`  \n  *${meta.join(' · ')}*\n`);
+      parts.push('\n');
+    }
+  }
+
+  const trends = parsed.trends;
+  if (Array.isArray(trends) && trends.length > 0) {
+    parts.push('### Tendances\n\n');
+    for (const item of trends) {
+      if (!item || typeof item !== 'object') continue;
+      const it = item as Record<string, unknown>;
+      const name = typeof it.trend_name === 'string' ? it.trend_name.trim() : '';
+      const desc = typeof it.description === 'string' ? it.description.trim() : '';
+      if (name) parts.push(`- **${name}**`);
+      else if (desc) parts.push('- *(Sans titre)*');
+      if (desc) parts.push(`\n\n  ${indentBody(desc, '  ')}\n`);
+      else if (name) parts.push('\n');
+      const meta: string[] = [];
+      if (typeof it.direction === 'string' && it.direction.trim()) {
+        const d = it.direction.trim();
+        meta.push(`Direction : ${DIRECTION_FR[d] ?? d}`);
+      }
+      if (typeof it.impact === 'string' && it.impact.trim()) {
+        meta.push(`Impact : ${it.impact.trim()}`);
+      }
+      if (meta.length) parts.push(`  \n  *${meta.join(' · ')}*\n`);
+      parts.push('\n');
+    }
+  }
+
+  const sources = parsed.sources;
+  if (Array.isArray(sources) && sources.length > 0) {
+    parts.push('### Sources\n\n');
+    for (const item of sources) {
+      if (!item || typeof item !== 'object') continue;
+      const it = item as Record<string, unknown>;
+      const name = typeof it.name === 'string' ? it.name.trim() : '';
+      const url = typeof it.url === 'string' ? it.url.trim() : '';
+      const extras: string[] = [];
+      if (typeof it.type === 'string' && it.type.trim()) {
+        const t = it.type.trim();
+        extras.push(TYPE_FR[t] ?? t);
+      }
+      if (typeof it.reliability === 'string' && it.reliability.trim()) {
+        const r = it.reliability.trim();
+        extras.push(`fiabilité : ${RELIABILITY_FR[r] ?? r}`);
+      }
+      let line = name ? `- **${name}**` : '- *(sans nom)*';
+      if (extras.length) line += ` — ${extras.join(', ')}`;
+      parts.push(`${line}\n`);
+      if (url) parts.push(`  - ${url}\n`);
+    }
+    parts.push('\n');
+  }
+
+  const recs = parsed.recommendations;
+  if (Array.isArray(recs) && recs.length > 0) {
+    parts.push('### Recommandations\n\n');
+    for (const item of recs) {
+      if (!item || typeof item !== 'object') continue;
+      const it = item as Record<string, unknown>;
+      const action = typeof it.action === 'string' ? it.action.trim() : '';
+      const rationale = typeof it.rationale === 'string' ? it.rationale.trim() : '';
+      let priFr = '';
+      if (typeof it.priority === 'string' && it.priority.trim()) {
+        const p = it.priority.trim();
+        priFr = ` *(priorité : ${PRIORITY_FR[p] ?? p})*`;
+      }
+      if (action) parts.push(`- **${action}**${priFr}\n`);
+      if (rationale) {
+        parts.push(`  - ${indentBody(rationale, '  - ')}\n`);
+      }
+      parts.push('\n');
+    }
+  }
+
+  const ns = parsed.next_steps;
+  if (typeof ns === 'string' && ns.trim()) {
+    parts.push('### Prochaines étapes\n\n', ns.trim(), '\n\n');
+  }
+
+  const rd = parsed.report_date ?? parsed.rapport_date;
+  if (typeof rd === 'string' && rd.trim()) {
+    parts.push(`*Date du rapport : ${rd.trim()}*\n`);
+  }
+
+  return parts.join('').trim();
+}
+
 /** Extrait le texte markdown à persister depuis la sortie d'exécution d'agent (News Monitor, etc.). */
 function extractMarkdownFromExecuteOutput(output: {
   output_raw?: string;
@@ -200,29 +380,17 @@ function extractMarkdownFromExecuteOutput(output: {
 } | null | undefined): string | null {
   if (!output) return null;
   const raw = (output.output_raw || '').trim();
-  if (raw) return raw;
   const parsed = output.output_parsed;
   if (parsed && typeof parsed === 'object') {
     const md = parsed.markdown;
     if (typeof md === 'string' && md.trim()) return md.trim();
-    if (typeof parsed.executive_summary === 'string' || Array.isArray(parsed.key_findings)) {
-      const parts: string[] = [];
-      if (typeof parsed.theme === 'string') parts.push(`## ${parsed.theme}\n`);
-      if (typeof parsed.executive_summary === 'string') {
-        parts.push('### Résumé exécutif\n\n', parsed.executive_summary, '\n\n');
-      }
-      if (Array.isArray(parsed.key_findings)) {
-        parts.push('### Points clés\n\n');
-        for (const item of parsed.key_findings) {
-          if (item && typeof item === 'object' && 'title' in item) {
-            const it = item as { title?: string; summary?: string };
-            parts.push(`- **${it.title || ''}**${it.summary ? `: ${it.summary}` : ''}\n`);
-          }
-        }
-      }
-      const built = parts.join('');
+    if (shouldRenderNewsMonitorMarkdown(parsed)) {
+      const built = newsMonitorParsedToMarkdown(parsed);
       if (built.trim()) return built.trim();
     }
+  }
+  if (raw) return raw;
+  if (parsed && typeof parsed === 'object') {
     try {
       return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
     } catch {
@@ -230,6 +398,15 @@ function extractMarkdownFromExecuteOutput(output: {
     }
   }
   return null;
+}
+
+/** Markdown affiché dans la zone « Réponse de l'agent » (FR structuré si disponible). */
+function getAgentResponseMarkdownForDisplay(output: {
+  output_raw?: string;
+  output_parsed?: Record<string, unknown> | null;
+} | null | undefined): string {
+  if (!output) return '';
+  return extractMarkdownFromExecuteOutput(output) ?? (output.output_raw || '').trim();
 }
 
 /** Libellé par défaut pour un nœud « résultats » : date ISO + titre du nœud parent. */
@@ -608,6 +785,7 @@ const NodeDetails = () => {
               message: 'Exécution terminée',
               output: {
                 output_raw: finalOutput,
+                output_parsed: final.output_parsed ?? undefined,
                 execution_time_ms: final.execution_time_ms,
                 agent_name: agentName,
                 input_text: effectiveInputText,
@@ -749,7 +927,7 @@ const NodeDetails = () => {
                   onClick={() => setDescriptionMdDialogOpen(true)}
                   sx={{ textTransform: 'none', color: '#00D9FF' }}
                 >
-                  Voir l’aperçu Markdown
+                  Afficher le descriptif
                 </Button>
               </Box>
             )}
@@ -1127,7 +1305,27 @@ const NodeDetails = () => {
       maxWidth="sm"
       fullWidth
     >
-      <DialogTitle>Ajouter un sous-nœud</DialogTitle>
+      <DialogTitle
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 1,
+          pr: 1,
+        }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>Ajouter un sous-nœud</Box>
+        <IconButton
+          aria-label="Fermer la fenêtre"
+          onClick={handleAddChildNodeCancel}
+          edge="end"
+          size="small"
+          disabled={isSaving}
+          sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+        >
+          <CloseIcon />
+        </IconButton>
+      </DialogTitle>
       <DialogContent>
         <TextField
           autoFocus
@@ -1162,13 +1360,33 @@ const NodeDetails = () => {
       maxWidth="md"
       fullWidth
     >
-      <DialogTitle>
-        Lancer le trigger manuellement
-        {selectedTriggerForExecute && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            {triggerLabels[selectedTriggerForExecute.trigger_type] || triggerLabels[getDisplayType(selectedTriggerForExecute.trigger_type)] || selectedTriggerForExecute.trigger_type}
-          </Typography>
-        )}
+      <DialogTitle
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 1,
+          pr: 1,
+        }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>
+          Lancer le trigger manuellement
+          {selectedTriggerForExecute && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              {triggerLabels[selectedTriggerForExecute.trigger_type] || triggerLabels[getDisplayType(selectedTriggerForExecute.trigger_type)] || selectedTriggerForExecute.trigger_type}
+            </Typography>
+          )}
+        </Box>
+        <IconButton
+          aria-label="Fermer la fenêtre"
+          onClick={handleCloseManualExecute}
+          disabled={isExecuting}
+          edge="end"
+          size="small"
+          sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+        >
+          <CloseIcon />
+        </IconButton>
       </DialogTitle>
       <DialogContent>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
@@ -1570,12 +1788,14 @@ const NodeDetails = () => {
                     >
                       {executeResult.output.agent_name && (
                         <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.primary' }}>
-                          <strong style={{ color: '#00D9FF' }}>🤖 Agent:</strong> <span style={{ color: '#E8EDF5' }}>{executeResult.output.agent_name}</span>
+                          <strong style={{ color: '#00D9FF' }}>🤖 Agent :</strong>{' '}
+                          <span style={{ color: '#E8EDF5' }}>{executeResult.output.agent_name}</span>
                         </Typography>
                       )}
                       {executeResult.output.input_text && (
                         <Typography variant="caption" sx={{ display: 'block', color: 'text.primary' }}>
-                          <strong style={{ color: '#00D9FF' }}>📥 Input:</strong> <span style={{ color: '#E8EDF5' }}>{executeResult.output.input_text}</span>
+                          <strong style={{ color: '#00D9FF' }}>📥 Consigne :</strong>{' '}
+                          <span style={{ color: '#E8EDF5' }}>{executeResult.output.input_text}</span>
                         </Typography>
                       )}
                     </Box>
@@ -1782,7 +2002,7 @@ const NodeDetails = () => {
                         }}
                       >
                         <ReactMarkdown className="markdown-body">
-                          {executeResult.output.output_raw}
+                          {getAgentResponseMarkdownForDisplay(executeResult.output)}
                         </ReactMarkdown>
                       </Box>
                     </Box>
@@ -1829,8 +2049,11 @@ const NodeDetails = () => {
                   )}
                   
                   {/* Si la sortie parsée existe mais n'est pas du markdown (JSON structuré) */}
-                  {executeResult.output.output_parsed && 
-                   !executeResult.output.output_parsed.markdown && (
+                  {executeResult.output.output_parsed &&
+                   !executeResult.output.output_parsed.markdown &&
+                   !shouldRenderNewsMonitorMarkdown(
+                     executeResult.output.output_parsed as Record<string, unknown>,
+                   ) && (
                     <Box sx={{ mb: 2 }}>
                       <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5, color: 'text.primary' }}>
                         📋 Données structurées (JSON):
@@ -1946,7 +2169,26 @@ const NodeDetails = () => {
       scroll="paper"
       PaperProps={{ sx: { maxHeight: '92vh' } }}
     >
-      <DialogTitle>Aperçu Markdown</DialogTitle>
+      <DialogTitle
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 1,
+          pr: 1,
+        }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>Afficher le descriptif</Box>
+        <IconButton
+          aria-label="Fermer la fenêtre"
+          onClick={() => setDescriptionMdDialogOpen(false)}
+          edge="end"
+          size="small"
+          sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+        >
+          <CloseIcon />
+        </IconButton>
+      </DialogTitle>
       <DialogContent dividers sx={{ pt: 2 }}>
         <Box
           sx={{

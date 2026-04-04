@@ -509,11 +509,21 @@ class ConfigurableAgentService:
         # Si la sortie commence par un titre Markdown (#) ou contient des liens Markdown [](), c'est du Markdown
         # Ou si elle ne commence pas par { (JSON)
         output_stripped = output_raw.strip()
+
+        from app.services.agent_result_child_node import parse_news_monitor_plaintext
+
+        plain_news = parse_news_monitor_plaintext(output_raw)
+        if plain_news:
+            logger.info(
+                "[ConfigurableAgent] ✅ Sortie reconnue comme rapport veille (sections texte, %d clés)",
+                len(plain_news),
+            )
+            return plain_news
+
         is_markdown = (
-            output_stripped.startswith('#') or 
-            re.search(r'\[.*?\]\(https?://', output_raw) or
-            re.search(r'^##', output_raw, re.MULTILINE) or
-            (not output_stripped.startswith('{') and not output_stripped.startswith('['))
+            output_stripped.startswith("#")
+            or bool(re.search(r"\[.*?\]\(https?://", output_raw))
+            or bool(re.search(r"^##", output_raw, re.MULTILINE))
         )
         
         if is_markdown:
@@ -1254,7 +1264,9 @@ class ConfigurableAgentService:
                         "[ConfigurableAgent] Stream: fallback contenu final depuis événement de fin (taille=%s)",
                         len(full_text),
                     )
-                queue.put_nowait(("done", _strip_tool_completion_log_lines(full_text)))
+                full_text = _strip_tool_completion_log_lines(full_text)
+                output_parsed = self._parse_output(full_text, agent_config.output_schema)
+                queue.put_nowait(("done", {"text": full_text, "parsed": output_parsed}))
             except Exception as e:
                 logger.exception("[ConfigurableAgent] Stream run error: %s", e)
                 queue.put_nowait(("error", str(e)))
@@ -1282,7 +1294,14 @@ class ConfigurableAgentService:
                 continue
             if kind == "done":
                 execution_time_ms = int((time.time() - start_time) * 1000)
-                yield f"data: {json.dumps({'done': True, 'output_raw': data, 'execution_time_ms': execution_time_ms})}\n\n"
+                payload: Dict[str, Any] = {
+                    "done": True,
+                    "output_raw": data["text"],
+                    "execution_time_ms": execution_time_ms,
+                }
+                if data.get("parsed") is not None:
+                    payload["output_parsed"] = data["parsed"]
+                yield f"data: {json.dumps(payload)}\n\n"
                 return
 
 

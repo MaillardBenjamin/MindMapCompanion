@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import CloseIcon from "@mui/icons-material/Close";
 import { listConfigurableAgents, executeConfigurableAgent, loadAgentsFromFiles } from "../../api/client";
 
 export default function AgentsList() {
@@ -312,8 +313,27 @@ export default function AgentsList() {
         maxWidth="md"
         fullWidth
       >
-        <DialogTitle>
-          Exécuter {executeDialog.agent?.name || "l'agent"}
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 1,
+            pr: 1,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>
+            Exécuter {executeDialog.agent?.name || "l'agent"}
+          </Box>
+          <IconButton
+            aria-label="Fermer la fenêtre"
+            onClick={() => setExecuteDialog({ open: false, agent: null })}
+            edge="end"
+            size="small"
+            sx={{ color: "text.secondary", flexShrink: 0, mt: -0.25 }}
+          >
+            <CloseIcon />
+          </IconButton>
         </DialogTitle>
         <DialogContent>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 2 }}>

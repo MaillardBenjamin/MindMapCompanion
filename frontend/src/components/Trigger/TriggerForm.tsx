@@ -19,8 +19,9 @@ import {
   FormLabel,
   Divider,
   Chip,
+  IconButton,
 } from "@mui/material";
-import { NoteAdd as NoteAddIcon } from "@mui/icons-material";
+import { NoteAdd as NoteAddIcon, Close as CloseIcon } from "@mui/icons-material";
 import { configurableAgentsApi } from "../../services/api";
 import type { ConfigurableAgentResponse } from "../../services/api";
 import { loadAgentsFromFiles } from "../../api/client";
@@ -708,17 +709,36 @@ export default function TriggerForm({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>
-        {trigger ? "Configurer le trigger" : "Créer un trigger"}
-        {trigger?.id != null && trigger.id !== "" && (
-          <Typography
-            component="div"
-            variant="caption"
-            sx={{ mt: 0.5, color: "text.secondary", fontWeight: 400 }}
-          >
-            ID du trigger : {trigger.id}
-          </Typography>
-        )}
+      <DialogTitle
+        sx={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 1,
+          pr: 1,
+        }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>
+          {trigger ? "Configurer le trigger" : "Créer un trigger"}
+          {trigger?.id != null && trigger.id !== "" && (
+            <Typography
+              component="div"
+              variant="caption"
+              sx={{ mt: 0.5, color: "text.secondary", fontWeight: 400 }}
+            >
+              ID du trigger : {trigger.id}
+            </Typography>
+          )}
+        </Box>
+        <IconButton
+          aria-label="Fermer la fenêtre"
+          onClick={onClose}
+          edge="end"
+          size="small"
+          sx={{ color: "text.secondary", flexShrink: 0, mt: -0.25 }}
+        >
+          <CloseIcon />
+        </IconButton>
       </DialogTitle>
       <DialogContent>
         <FormControl fullWidth sx={{ mt: 1 }}>

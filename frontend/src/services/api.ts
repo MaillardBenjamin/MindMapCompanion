@@ -505,7 +505,11 @@ export const triggersApi = {
       onChunk: (content: string) => void;
       onStatus?: (message: string) => void;
       onToolResult?: (toolName: string, resultPreview: string) => void;
-      onDone?: (final: { output_raw?: string; execution_time_ms?: number }) => void;
+      onDone?: (final: {
+        output_raw?: string;
+        output_parsed?: Record<string, unknown> | null;
+        execution_time_ms?: number;
+      }) => void;
       onError?: (message: string) => void;
     }
   ): Promise<void> => {
@@ -540,6 +544,7 @@ export const triggersApi = {
                 content?: string;
                 done?: boolean;
                 output_raw?: string;
+                output_parsed?: Record<string, unknown> | null;
                 execution_time_ms?: number;
                 error?: string;
                 event?: string;
@@ -561,6 +566,7 @@ export const triggersApi = {
               if (json.done) {
                 callbacks.onDone?.({
                   output_raw: json.output_raw,
+                  output_parsed: json.output_parsed,
                   execution_time_ms: json.execution_time_ms,
                 });
                 return;

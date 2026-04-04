@@ -27,6 +27,7 @@ import {
   Edit as EditIcon,
   Delete as DeleteIcon,
   Check as CheckIcon,
+  Close as CloseIcon,
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMindmapStore } from '../../stores/mindmapStore';
@@ -187,8 +188,30 @@ const MindmapSelector = () => {
           },
         }}
       >
-        <DialogTitle sx={{ color: 'text.primary', pb: 1 }}>
-          Mes Mindmaps
+        <DialogTitle
+          sx={{
+            color: 'text.primary',
+            pb: 1,
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 1,
+            pr: 1,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>Mes Mindmaps</Box>
+          <IconButton
+            aria-label="Fermer la fenêtre"
+            onClick={() => {
+              setOpen(false);
+              clearError();
+            }}
+            edge="end"
+            size="small"
+            sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+          >
+            <CloseIcon />
+          </IconButton>
         </DialogTitle>
         <DialogContent>
           {error && (
@@ -320,8 +343,31 @@ const MindmapSelector = () => {
           },
         }}
       >
-        <DialogTitle sx={{ color: 'text.primary' }}>
-          Créer un nouveau mindmap
+        <DialogTitle
+          sx={{
+            color: 'text.primary',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 1,
+            pr: 1,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>Créer un nouveau mindmap</Box>
+          <IconButton
+            aria-label="Fermer la fenêtre"
+            onClick={() => {
+              setCreateDialogOpen(false);
+              setNewMindmapName('');
+              setNewMindmapDescription('');
+              clearError();
+            }}
+            edge="end"
+            size="small"
+            sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+          >
+            <CloseIcon />
+          </IconButton>
         </DialogTitle>
         <DialogContent>
           {error && (
@@ -413,8 +459,26 @@ const MindmapSelector = () => {
           },
         }}
       >
-        <DialogTitle sx={{ color: 'text.primary' }}>
-          Modifier le mindmap
+        <DialogTitle
+          sx={{
+            color: 'text.primary',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 1,
+            pr: 1,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>Modifier le mindmap</Box>
+          <IconButton
+            aria-label="Fermer la fenêtre"
+            onClick={handleEditCancel}
+            edge="end"
+            size="small"
+            sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+          >
+            <CloseIcon />
+          </IconButton>
         </DialogTitle>
         <DialogContent>
           {error && (
@@ -467,8 +531,27 @@ const MindmapSelector = () => {
           },
         }}
       >
-        <DialogTitle sx={{ color: 'text.primary', pb: 1 }}>
-          Confirmer la suppression
+        <DialogTitle
+          sx={{
+            color: 'text.primary',
+            pb: 1,
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 1,
+            pr: 1,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>Confirmer la suppression</Box>
+          <IconButton
+            aria-label="Fermer la fenêtre"
+            onClick={handleDeleteCancel}
+            edge="end"
+            size="small"
+            sx={{ color: 'text.secondary', flexShrink: 0, mt: -0.25 }}
+          >
+            <CloseIcon />
+          </IconButton>
         </DialogTitle>
         <DialogContent>
           {error && (
