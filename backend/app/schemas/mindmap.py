@@ -33,6 +33,12 @@ class MindmapResponse(MindmapBase):
     updated_at: datetime
 
 
+class MindmapSyncRevisionResponse(BaseModel):
+    """Révision monotonique pour détecter les mises à jour du graphe côté serveur."""
+
+    revision: int
+
+
 # Schemas pour Node
 class NodeBase(BaseModel):
     model_config = ConfigDict(protected_namespaces=())

@@ -9,7 +9,6 @@ import {
   Alert,
   IconButton,
   Tooltip,
-  LinearProgress,
   Button,
 } from '@mui/material';
 import {
@@ -24,7 +23,6 @@ import {
   AccessTime as TimeIcon,
   Bolt as BoltIcon,
   ArrowForward as ArrowForwardIcon,
-  PlayArrow as PlayIcon,
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 import { mindmapsApi, historyApi, type MindmapResponse, type HistoryItem } from '../../services/api';
@@ -36,7 +34,8 @@ const Overview = ({ onSelectMindmap }: { onSelectMindmap: (mindmapId: number) =>
   const [recentAgentExecutions, setRecentAgentExecutions] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { selectMindmap } = useMindmapStore();
+  const [isCreatingMindmap, setIsCreatingMindmap] = useState(false);
+  const { selectMindmap, createMindmap } = useMindmapStore();
   const { user } = useAuthStore();
 
   const loadData = async () => {
@@ -68,6 +67,26 @@ const Overview = ({ onSelectMindmap }: { onSelectMindmap: (mindmapId: number) =>
       onSelectMindmap(mindmapId);
     } catch (err: any) {
       setError(err.detail || 'Erreur lors du chargement du mindmap');
+    }
+  };
+
+  const handleCreateMindmap = async () => {
+    if (isCreatingMindmap) return;
+    setIsCreatingMindmap(true);
+    setError(null);
+
+    try {
+      const now = new Date();
+      const defaultName = `Nouveau mindmap ${now.toLocaleDateString('fr-FR')} ${now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+      const created = await createMindmap(defaultName);
+      if (created) {
+        await loadData();
+        onSelectMindmap(created.id);
+      }
+    } catch (err: any) {
+      setError(err?.detail || 'Erreur lors de la création du mindmap');
+    } finally {
+      setIsCreatingMindmap(false);
     }
   };
 
@@ -335,6 +354,8 @@ const Overview = ({ onSelectMindmap }: { onSelectMindmap: (mindmapId: number) =>
                   <Button
                     size="small"
                     startIcon={<AddIcon />}
+                    onClick={handleCreateMindmap}
+                    disabled={isCreatingMindmap}
                     sx={{
                       color: '#00D9FF',
                       fontSize: '0.8rem',
@@ -371,6 +392,8 @@ const Overview = ({ onSelectMindmap }: { onSelectMindmap: (mindmapId: number) =>
                       <Button
                         variant="contained"
                         startIcon={<AddIcon />}
+                        onClick={handleCreateMindmap}
+                        disabled={isCreatingMindmap}
                         sx={{
                           backgroundColor: '#00D9FF',
                           color: '#0A0E17',

@@ -20,6 +20,7 @@ import {
   Divider,
   Chip,
 } from "@mui/material";
+import { NoteAdd as NoteAddIcon } from "@mui/icons-material";
 import { configurableAgentsApi } from "../../services/api";
 import type { ConfigurableAgentResponse } from "../../services/api";
 import { loadAgentsFromFiles } from "../../api/client";
@@ -57,6 +58,60 @@ const TRIGGER_TYPES: { value: TriggerType; label: string }[] = [
   { value: "manual", label: "Manuel" },
 ];
 
+type OutputRenderType = 'screen' | 'email' | 'audio_tts' | 'audio_email' | 'mindmap_child';
+const OUTPUT_TYPES: OutputRenderType[] = ['screen', 'email', 'audio_tts', 'audio_email', 'mindmap_child'];
+
+/**
+ * Génère l'expression cron en UTC à partir des champs UI (aligné avec le backend scheduler).
+ * Doit rester synchrone avec mergeCronConfigWithExpression / generateCronExpression.
+ */
+export function computeCronExpressionFromFields(
+  cron_hour: number,
+  cron_minute: number,
+  cron_days: number[],
+): string {
+  const today = new Date();
+  const localDate = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    cron_hour,
+    cron_minute,
+  );
+  const utcHour = localDate.getUTCHours();
+  const utcMinute = localDate.getUTCMinutes();
+  const days = cron_days || [];
+  if (days.length === 0 || days.length === 7) {
+    return `${utcMinute} ${utcHour} * * *`;
+  }
+  const daysStr = [...days].sort((a, b) => a - b).join(',');
+  return `${utcMinute} ${utcHour} * * ${daysStr}`;
+}
+
+/** Fusionne la config cron avec des défauts (9h00, tous les jours) et calcule toujours cron_expression. */
+export function mergeCronConfigWithExpression(base: Record<string, any>): Record<string, any> {
+  const cron_hour = base.cron_hour ?? 9;
+  const cron_minute = base.cron_minute ?? 0;
+  const cron_days = Array.isArray(base.cron_days) ? base.cron_days : [];
+  const cron_expression = computeCronExpressionFromFields(cron_hour, cron_minute, cron_days);
+  return {
+    ...base,
+    cron_hour,
+    cron_minute,
+    cron_days,
+    cron_expression,
+  };
+}
+
+/** Si l'expression manque ou est vide, la recalcule à partir des champs (ou défauts). */
+export function ensureCronExpressionOnConfig(base: Record<string, any>): Record<string, any> {
+  const expr = base.cron_expression;
+  if (expr != null && String(expr).trim() !== '') {
+    return { ...base };
+  }
+  return mergeCronConfigWithExpression(base);
+}
+
 const parseInputSchemaFromMarkdown = (markdown?: string) => {
   if (!markdown) return null;
   try {
@@ -91,7 +146,7 @@ export default function TriggerForm({
   const [selectedAgent, setSelectedAgent] = useState<string>('');
   const [selectedAction, setSelectedAction] = useState<string>('');
   const [inputText, setInputText] = useState('');
-  const [outputType, setOutputType] = useState<'screen' | 'email' | 'audio_tts' | 'audio_email'>('screen');
+  const [outputType, setOutputType] = useState<OutputRenderType>('screen');
   const [emailTo, setEmailTo] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
   const [availableAgents, setAvailableAgents] = useState<ConfigurableAgentResponse[]>([]);
@@ -219,54 +274,17 @@ export default function TriggerForm({
     }
   };
 
-  // Fonction pour générer l'expression cron à partir des paramètres
-  // Convertit l'heure locale sélectionnée en UTC pour cohérence avec date_reached
+  // Met à jour la config avec une expression cron calculée (UTC), comme computeCronExpressionFromFields.
   const generateCronExpression = (updatedConfig: Record<string, any>) => {
-    const days = updatedConfig.cron_days || [];
-    const localHour = updatedConfig.cron_hour ?? 9;
-    const localMinute = updatedConfig.cron_minute ?? 0;
-    
-    // Convertir l'heure locale en UTC pour le cron
-    // Créer une date avec l'heure locale sélectionnée (aujourd'hui, pour la conversion)
-    const today = new Date();
-    const localDate = new Date(
-      today.getFullYear(),
-      today.getMonth(),
-      today.getDate(),
-      localHour,
-      localMinute
-    );
-    
-    // Convertir en UTC
-    const utcHour = localDate.getUTCHours();
-    const utcMinute = localDate.getUTCMinutes();
-    
-    let cronExpr: string;
-    
-    if (days.length === 0 || days.length === 7) {
-      // Si aucun jour n'est sélectionné ou tous les jours, utiliser *
-      cronExpr = `${utcMinute} ${utcHour} * * *`;
-    } else {
-      // Jours spécifiques (0 = dimanche, 6 = samedi).
-      // NOTE: cette convention est alignée avec le backend (APScheduler) et les expressions cron standard.
-      // Toute évolution UI (ex: afficher Lundi=1) doit conserver ce mapping, sinon on introduit des décalages.
-      const daysStr = days.sort((a: number, b: number) => a - b).join(',');
-      cronExpr = `${utcMinute} ${utcHour} * * ${daysStr}`;
-    }
-    
-    // Source de vérité persistée : `cron_expression`.
-    // Les champs UI (cron_hour/cron_minute/cron_days) sont en heure locale pour l'utilisateur.
-    // L'expression cron est en UTC pour cohérence avec date_reached.
-    setConfig({ ...updatedConfig, cron_expression: cronExpr });
+    setConfig(mergeCronConfigWithExpression(updatedConfig));
   };
 
   useEffect(() => {
     if (trigger) {
       setTriggerType(trigger.trigger_type);
       setEnabled(trigger.enabled);
-      const triggerConfig = trigger.config || {};
-      setConfig(triggerConfig);
-      
+      const triggerConfig: Record<string, any> = { ...(trigger.config || {}) };
+
       // Si c'est un trigger cron et qu'on a une expression mais pas les paramètres détaillés,
       // essayer de parser l'expression pour remplir les champs
       if (trigger.trigger_type === 'cron' && triggerConfig.cron_expression && 
@@ -313,15 +331,16 @@ export default function TriggerForm({
           triggerConfig.cron_minute = localMinute;
           triggerConfig.cron_hour = localHour;
           triggerConfig.cron_days = days;
-          setConfig(triggerConfig);
         }
       }
-      
-      // Si c'est un trigger cron et qu'on a les paramètres mais pas l'expression, la générer
-      if (trigger.trigger_type === 'cron' && 
-          (triggerConfig.cron_days || triggerConfig.cron_hour !== undefined || triggerConfig.cron_minute !== undefined) &&
-          !triggerConfig.cron_expression) {
-        generateCronExpression(triggerConfig);
+
+      // Toujours persister une cron_expression (sinon le scheduler APScheduler ignore le trigger)
+      if (trigger.trigger_type === 'cron') {
+        const ensured = ensureCronExpressionOnConfig(triggerConfig);
+        setConfig(ensured);
+        Object.assign(triggerConfig, ensured);
+      } else {
+        setConfig(triggerConfig);
       }
       
       // Restaurer les valeurs de configuration d'exécution
@@ -340,7 +359,12 @@ export default function TriggerForm({
       setSelectedAgent(restoredAgent);
       setSelectedAction(restoredAction);
       setInputText(triggerConfig.input_text || '');
-      setOutputType(triggerConfig.output_type || 'screen');
+      const rawOt = triggerConfig.output_type as string | undefined;
+      setOutputType(
+        rawOt && OUTPUT_TYPES.includes(rawOt as OutputRenderType)
+          ? (rawOt as OutputRenderType)
+          : 'screen',
+      );
       setEmailTo(triggerConfig.email_to || '');
       setEmailSubject(triggerConfig.email_subject || '');
       // Restaurer les options de l'agent (champs dynamiques)
@@ -624,9 +648,13 @@ export default function TriggerForm({
     console.log("[TriggerForm] config:", config);
     console.log("[TriggerForm] enabled:", enabled);
     
+    // Garantir cron_expression avant envoi API (évite config {} si l'utilisateur n'a pas touché aux listes)
+    const configBase =
+      triggerType === 'cron' ? ensureCronExpressionOnConfig({ ...config }) : { ...config };
+
     // Construire la config complète avec les paramètres d'exécution
     const fullConfig = {
-      ...config,
+      ...configBase,
       task_type: taskType,
       selected_agent: taskType === 'agent' ? selectedAgent : undefined,
       selected_action: taskType === 'action' ? selectedAction : undefined,
@@ -682,6 +710,15 @@ export default function TriggerForm({
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle>
         {trigger ? "Configurer le trigger" : "Créer un trigger"}
+        {trigger?.id != null && trigger.id !== "" && (
+          <Typography
+            component="div"
+            variant="caption"
+            sx={{ mt: 0.5, color: "text.secondary", fontWeight: 400 }}
+          >
+            ID du trigger : {trigger.id}
+          </Typography>
+        )}
       </DialogTitle>
       <DialogContent>
         <FormControl fullWidth sx={{ mt: 1 }}>
@@ -691,9 +728,13 @@ export default function TriggerForm({
             onChange={(e) => {
               const newType = e.target.value as TriggerType;
               setTriggerType(newType);
-              // Réinitialiser la config si on change de type
               if (triggerType !== newType) {
-                setConfig({});
+                // Cron : initialiser tout de suite heure/jours + expression (sinon la config reste {} jusqu'aux onChange)
+                if (newType === 'cron') {
+                  setConfig(mergeCronConfigWithExpression({}));
+                } else {
+                  setConfig({});
+                }
               }
             }}
             label="Type de trigger"
@@ -1016,16 +1057,32 @@ export default function TriggerForm({
           <RadioGroup
             row
             value={outputType}
+            sx={{ flexWrap: 'wrap', gap: 0.5 }}
             onChange={(e) => {
-              setOutputType(e.target.value as 'screen' | 'email' | 'audio_tts' | 'audio_email');
-              setConfig({ ...config, output_type: e.target.value });
+              const v = e.target.value as OutputRenderType;
+              setOutputType(v);
+              setConfig({ ...config, output_type: v });
             }}
           >
             <FormControlLabel value="screen" control={<Radio />} label="À l'écran" />
+            <FormControlLabel
+              value="mindmap_child"
+              control={<Radio />}
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <NoteAddIcon fontSize="small" />
+                  <span>Nœud enfant (date + titre)</span>
+                </Box>
+              }
+            />
             <FormControlLabel value="email" control={<Radio />} label="Par email" />
             <FormControlLabel value="audio_tts" control={<Radio />} label="Audio (TTS)" />
             <FormControlLabel value="audio_email" control={<Radio />} label="Audio par email" />
           </RadioGroup>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            « Nœud enfant » : titre du nœud créé = date (AAAA-MM-JJ) + nom du nœud courant ; le markdown est
+            stocké dans la description.
+          </Typography>
         </FormControl>
 
         {/* Configuration email (Par email ou Audio par email) */}

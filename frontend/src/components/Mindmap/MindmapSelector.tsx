@@ -35,11 +35,15 @@ import type { MindmapResponse } from '../../services/api';
 const MindmapSelector = () => {
   const [open, setOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [selectedMindmapForMenu, setSelectedMindmapForMenu] = useState<MindmapResponse | null>(null);
   const [newMindmapName, setNewMindmapName] = useState('');
   const [newMindmapDescription, setNewMindmapDescription] = useState('');
+  const [editMindmapName, setEditMindmapName] = useState('');
+  const [editMindmapDescription, setEditMindmapDescription] = useState('');
+  const [isUpdatingMindmap, setIsUpdatingMindmap] = useState(false);
 
   const {
     mindmaps,
@@ -50,6 +54,7 @@ const MindmapSelector = () => {
     createMindmap,
     selectMindmap,
     deleteMindmap,
+    updateMindmap,
     clearError,
   } = useMindmapStore();
 
@@ -96,13 +101,49 @@ const MindmapSelector = () => {
 
   const handleMenuClose = () => {
     setMenuAnchor(null);
-    setSelectedMindmapForMenu(null);
   };
 
   const handleDeleteClick = () => {
     // Fermer le menu mais conserver selectedMindmapForMenu pour le dialog
     setMenuAnchor(null);
     setDeleteDialogOpen(true);
+  };
+
+  const handleEditClick = () => {
+    if (!selectedMindmapForMenu) return;
+    setMenuAnchor(null);
+    setEditMindmapName(selectedMindmapForMenu.name || '');
+    setEditMindmapDescription(selectedMindmapForMenu.description || '');
+    setEditDialogOpen(true);
+  };
+
+  const handleEditConfirm = async () => {
+    if (!selectedMindmapForMenu) return;
+    if (!editMindmapName.trim()) return;
+    if (isUpdatingMindmap) return;
+
+    setIsUpdatingMindmap(true);
+    clearError();
+    try {
+      await updateMindmap(
+        selectedMindmapForMenu.id,
+        editMindmapName.trim(),
+        editMindmapDescription.trim() || undefined
+      );
+      await loadMindmaps();
+      setEditDialogOpen(false);
+      setSelectedMindmapForMenu(null);
+    } finally {
+      setIsUpdatingMindmap(false);
+    }
+  };
+
+  const handleEditCancel = () => {
+    setEditDialogOpen(false);
+    setEditMindmapName('');
+    setEditMindmapDescription('');
+    setSelectedMindmapForMenu(null);
+    clearError();
   };
 
   const handleDeleteConfirm = async () => {
@@ -343,8 +384,7 @@ const MindmapSelector = () => {
       >
         <MenuItem
           onClick={() => {
-            handleMenuClose();
-            // TODO: Implémenter l'édition
+            handleEditClick();
           }}
           sx={{ color: 'text.primary' }}
         >
@@ -359,6 +399,60 @@ const MindmapSelector = () => {
           Supprimer
         </MenuItem>
       </Menu>
+
+      {/* Dialog d'édition */}
+      <Dialog
+        open={editDialogOpen}
+        onClose={handleEditCancel}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            backgroundColor: '#12182B',
+            border: '1px solid rgba(0, 217, 255, 0.2)',
+          },
+        }}
+      >
+        <DialogTitle sx={{ color: 'text.primary' }}>
+          Modifier le mindmap
+        </DialogTitle>
+        <DialogContent>
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={clearError}>
+              {error}
+            </Alert>
+          )}
+          <TextField
+            fullWidth
+            label="Nom du mindmap"
+            value={editMindmapName}
+            onChange={(e) => setEditMindmapName(e.target.value)}
+            sx={{ mb: 2, mt: 2 }}
+            required
+            autoFocus
+          />
+          <TextField
+            fullWidth
+            label="Description (optionnel)"
+            value={editMindmapDescription}
+            onChange={(e) => setEditMindmapDescription(e.target.value)}
+            multiline
+            rows={3}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button variant="outlined" onClick={handleEditCancel}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleEditConfirm}
+            disabled={!editMindmapName.trim() || isUpdatingMindmap}
+          >
+            Enregistrer
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Dialog de confirmation de suppression */}
       <Dialog

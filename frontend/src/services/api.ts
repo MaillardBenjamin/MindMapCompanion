@@ -370,6 +370,14 @@ export const mindmapsApi = {
       await handleResponse<{ detail: string }>(response);
     }
   },
+
+  /** Révision serveur pour recharger le graphe si un cron a modifié les données */
+  getSyncRevision: async (id: number): Promise<{ revision: number }> => {
+    const response = await fetchWithAuth(buildUrl(API_ENDPOINTS.MINDMAPS.SYNC_REVISION(id)), {
+      method: 'GET',
+    });
+    return handleResponse<{ revision: number }>(response);
+  },
 };
 
 // Service API pour les nodes
@@ -659,6 +667,13 @@ export interface OrganizeResponse {
     created_nodes: { id: number; label: string; parent_id: number | null }[];
     updated_nodes: { id: number; label: string }[];
     auto_applied: boolean;
+    /** Triggers créés côté backend sur les feuilles (Assistant IA) */
+    assistant_triggers?: {
+      node_id: number;
+      trigger_id: number;
+      agent_id: number;
+      agent_name: string;
+    }[];
   };
 }
 
@@ -744,7 +759,7 @@ export interface TriggerManualExecuteRequest {
   trigger_id?: string;
   task_type: 'agent' | 'action';
   task_id: string;
-  output_type: 'screen' | 'email' | 'audio_tts' | 'audio_email';
+  output_type: 'screen' | 'email' | 'audio_tts' | 'audio_email' | 'mindmap_child';
   input_text?: string;
   agent_options?: Record<string, any>;
   /** Requis pour output_type "email" ou "audio_email" */

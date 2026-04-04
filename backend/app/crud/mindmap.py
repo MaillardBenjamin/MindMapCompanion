@@ -245,6 +245,11 @@ def get_node(db: Session, node_id: int, user_id: int) -> Node:
     ).first()
 
 
+def get_node_by_id(db: Session, node_id: int) -> Optional[Node]:
+    """Récupère un nœud par ID sans filtre utilisateur (scheduler / tâches internes)."""
+    return db.query(Node).filter(Node.id == node_id).first()
+
+
 def get_nodes_by_mindmap(db: Session, mindmap_id: int, user_id: int) -> List[Node]:
     """Récupère tous les nœuds d'un mindmap"""
     return db.query(Node).join(Mindmap).filter(

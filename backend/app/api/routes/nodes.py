@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
@@ -11,6 +13,9 @@ from app.schemas.mindmap import (
     NodeWithChildren,
 )
 from app.crud import mindmap as crud_mindmap
+from app.services.state_changed import fire_state_changed_triggers
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
@@ -88,10 +93,14 @@ def get_node(
 def update_node(
     node_id: int,
     node_update: NodeUpdate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Met à jour un nœud"""
+    old_node = crud_mindmap.get_node(db, node_id=node_id, user_id=current_user.id)
+    old_status = old_node.status if old_node else None
+
     try:
         db_node = crud_mindmap.update_node(
             db, node_id=node_id, user_id=current_user.id, node_update=node_update
@@ -101,9 +110,25 @@ def update_node(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Nœud introuvable"
             )
+
+        if (
+            old_status is not None
+            and node_update.status is not None
+            and db_node.status != old_status
+        ):
+            logger.info(
+                "[Nodes] Changement de statut détecté sur le nœud %d : %s → %s",
+                node_id, old_status, db_node.status,
+            )
+            background_tasks.add_task(
+                fire_state_changed_triggers,
+                node_id=node_id,
+                old_status=old_status,
+                new_status=db_node.status,
+            )
+
         return db_node
     except ValueError as e:
-        # Erreur de validation (parent_id invalide, cycle, etc.)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)

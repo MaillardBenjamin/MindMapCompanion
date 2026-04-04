@@ -37,6 +37,7 @@ import {
   PlayArrow as PlayIcon,
   ScreenLockPortrait as ScreenIcon,
   Email as EmailIcon,
+  NoteAdd as NoteAddIcon,
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMindmapStore } from '../../stores/mindmapStore';
@@ -45,6 +46,7 @@ import {
   triggersApi, 
   configurableAgentsApi, 
   actionsApi,
+  nodesApi,
   ApiErrorResponse,
   type TriggerCreate,
   type ConfigurableAgentResponse,
@@ -111,6 +113,135 @@ const triggerColors: Record<string, string> = {
   date_reached: '#FBBF24',
 };
 
+const CRON_DAY_LABELS = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+
+/** Parse une expression cron simple (minute heure * * jours) en champs locaux — aligné sur TriggerForm. */
+function parseCronExpressionToLocalFields(expr: string): { hour: number; minute: number; days: number[] } | null {
+  const cronParts = expr.trim().split(/\s+/);
+  if (cronParts.length < 5) return null;
+  const utcMinute = parseInt(cronParts[0], 10) || 0;
+  const utcHour = parseInt(cronParts[1], 10) || 0;
+  const daysPart = cronParts[4];
+  const today = new Date();
+  const utcDate = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), utcHour, utcMinute),
+  );
+  const localHour = utcDate.getHours();
+  const localMinute = utcDate.getMinutes();
+  const days: number[] = [];
+  if (daysPart === '*') {
+    for (let i = 0; i <= 6; i += 1) days.push(i);
+  } else if (daysPart) {
+    daysPart.split(',').forEach((range) => {
+      if (range.includes('-')) {
+        const [start, end] = range.split('-').map(Number);
+        for (let i = start; i <= end; i += 1) {
+          if (i >= 0 && i <= 6) days.push(i);
+        }
+      } else {
+        const day = parseInt(range, 10);
+        if (day >= 0 && day <= 6) days.push(day);
+      }
+    });
+  }
+  return { hour: localHour, minute: localMinute, days };
+}
+
+/** Résumé heure + jours pour l’affichage carte trigger planifié (config TriggerForm). */
+function formatCronScheduleSummary(config: unknown): { timeLine: string; daysLine: string | null } | null {
+  if (!config || typeof config !== 'object') return null;
+  const c = config as Record<string, unknown>;
+  let hour = c.cron_hour;
+  let minute = c.cron_minute;
+  let days: number[] = Array.isArray(c.cron_days)
+    ? (c.cron_days as unknown[]).map((x) => Number(x)).filter((n) => !Number.isNaN(n))
+    : [];
+  const expr = typeof c.cron_expression === 'string' ? c.cron_expression : '';
+
+  if (expr && (hour === undefined || minute === undefined || days.length === 0)) {
+    const parsed = parseCronExpressionToLocalFields(expr);
+    if (parsed) {
+      if (hour === undefined) hour = parsed.hour;
+      if (minute === undefined) minute = parsed.minute;
+      if (days.length === 0) days = parsed.days;
+    }
+  }
+
+  if (hour !== undefined && minute !== undefined) {
+    const timeLine = `Heure : ${String(Number(hour)).padStart(2, '0')}:${String(Number(minute)).padStart(2, '0')}`;
+    let daysLine: string | null;
+    if (days.length === 0) {
+      daysLine = 'Jours : —';
+    } else if (days.length === 7) {
+      daysLine = 'Jours : tous les jours';
+    } else {
+      const labels = [...new Set(days)]
+        .sort((a, b) => a - b)
+        .map((d) => CRON_DAY_LABELS[d] ?? `J${d}`);
+      daysLine = `Jours : ${labels.join(', ')}`;
+    }
+    return { timeLine, daysLine };
+  }
+
+  if (expr.trim()) {
+    return { timeLine: `Expression : ${expr}`, daysLine: null };
+  }
+  return null;
+}
+
+function isCronLikeTrigger(triggerType: string): boolean {
+  return triggerType === 'cron' || triggerType === 'schedule';
+}
+
+/** Extrait le texte markdown à persister depuis la sortie d'exécution d'agent (News Monitor, etc.). */
+function extractMarkdownFromExecuteOutput(output: {
+  output_raw?: string;
+  output_parsed?: Record<string, unknown> | null;
+} | null | undefined): string | null {
+  if (!output) return null;
+  const raw = (output.output_raw || '').trim();
+  if (raw) return raw;
+  const parsed = output.output_parsed;
+  if (parsed && typeof parsed === 'object') {
+    const md = parsed.markdown;
+    if (typeof md === 'string' && md.trim()) return md.trim();
+    if (typeof parsed.executive_summary === 'string' || Array.isArray(parsed.key_findings)) {
+      const parts: string[] = [];
+      if (typeof parsed.theme === 'string') parts.push(`## ${parsed.theme}\n`);
+      if (typeof parsed.executive_summary === 'string') {
+        parts.push('### Résumé exécutif\n\n', parsed.executive_summary, '\n\n');
+      }
+      if (Array.isArray(parsed.key_findings)) {
+        parts.push('### Points clés\n\n');
+        for (const item of parsed.key_findings) {
+          if (item && typeof item === 'object' && 'title' in item) {
+            const it = item as { title?: string; summary?: string };
+            parts.push(`- **${it.title || ''}**${it.summary ? `: ${it.summary}` : ''}\n`);
+          }
+        }
+      }
+      const built = parts.join('');
+      if (built.trim()) return built.trim();
+    }
+    try {
+      return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Libellé par défaut pour un nœud « résultats » : date ISO + titre du nœud parent. */
+function buildDefaultResultChildLabel(parentLabel: string): string {
+  const iso = new Date().toISOString().slice(0, 10);
+  const t = (parentLabel || 'Sans titre').trim() || 'Sans titre';
+  return `${iso} — ${t}`.slice(0, 200);
+}
+
+const OUTPUT_TYPES = ['screen', 'email', 'audio_tts', 'audio_email', 'mindmap_child'] as const;
+type OutputRenderType = (typeof OUTPUT_TYPES)[number];
+
 const parseInputSchemaFromMarkdown = (markdown?: string) => {
   if (!markdown) return null;
   try {
@@ -145,7 +276,7 @@ const NodeDetails = () => {
   const [taskType, setTaskType] = useState<'agent' | 'action'>('agent');
   const [selectedAgent, setSelectedAgent] = useState<string>('');
   const [selectedAction, setSelectedAction] = useState<string>('');
-  const [outputType, setOutputType] = useState<'screen' | 'email' | 'audio_tts' | 'audio_email'>('screen');
+  const [outputType, setOutputType] = useState<OutputRenderType>('screen');
   const [inputText, setInputText] = useState('');
   const [emailTo, setEmailTo] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
@@ -157,6 +288,9 @@ const NodeDetails = () => {
   const [executeError, setExecuteError] = useState<string>('');
   const [streamingText, setStreamingText] = useState('');
   const [streamingStatus, setStreamingStatus] = useState('');
+  const [resultChildLabel, setResultChildLabel] = useState('');
+  const [savingResultChild, setSavingResultChild] = useState(false);
+  const [descriptionMdDialogOpen, setDescriptionMdDialogOpen] = useState(false);
   const [streamingToolResults, setStreamingToolResults] = useState<Array<{ toolName: string; resultPreview: string }>>([]);
   const streamContainerRef = useRef<HTMLDivElement>(null);
 
@@ -166,6 +300,7 @@ const NodeDetails = () => {
       setEditLabel(selectedNode.data.label || '');
       setEditDescription(selectedNode.data.description || '');
       setEditStatus(selectedNode.data.status || 'inbox');
+      setDescriptionMdDialogOpen(false);
     }
   }, [selectedNode?.id, selectedNode?.data.label, selectedNode?.data.description, selectedNode?.data.status]);
 
@@ -327,7 +462,12 @@ const NodeDetails = () => {
     setTaskType(taskType);
     setSelectedAgent(taskType === 'agent' ? String(taskId || '') : '');
     setSelectedAction(taskType === 'action' ? String(taskId || '') : '');
-    setOutputType('screen'); // Par défaut « À l'écran » pour un lancement manuel
+    const rawOt = config.output_type as string | undefined;
+    setOutputType(
+      rawOt && OUTPUT_TYPES.includes(rawOt as OutputRenderType)
+        ? (rawOt as OutputRenderType)
+        : 'screen',
+    );
     setInputText(config.input_text || '');
     setAgentOptions(config.agent_options || {});
     // La config peut avoir email_config ou email_to/email_subject directement
@@ -335,6 +475,7 @@ const NodeDetails = () => {
     setEmailSubject(config.email_config?.subject || config.email_subject || '');
     setExecuteResult(null);
     setExecuteError('');
+    setResultChildLabel(buildDefaultResultChildLabel(selectedNode?.data.label || ''));
   };
 
   const handleCloseManualExecute = () => {
@@ -345,6 +486,52 @@ const NodeDetails = () => {
     setStreamingText('');
     setStreamingStatus('');
     setStreamingToolResults([]);
+    setResultChildLabel('');
+    setSavingResultChild(false);
+    setDescriptionMdDialogOpen(false);
+  };
+
+  const handleCreateResultChildNode = async () => {
+    if (!selectedNode?.data.backendId || !currentMindmap) {
+      showError('Sélectionnez un mindmap et un nœud parent.');
+      return;
+    }
+    const md = extractMarkdownFromExecuteOutput(executeResult?.output);
+    if (!md) {
+      showError('Aucun contenu à enregistrer.');
+      return;
+    }
+    const label =
+      resultChildLabel.trim() || buildDefaultResultChildLabel(selectedNode.data.label || '');
+    setSavingResultChild(true);
+    try {
+      const px = Math.round(selectedNode.position.x + 200);
+      const py = Math.round(selectedNode.position.y);
+      const created = await nodesApi.create({
+        mindmap_id: currentMindmap.id,
+        parent_id: selectedNode.data.backendId,
+        label: label.slice(0, 200),
+        description: md,
+        color: selectedNode.data.color || '#00D9FF',
+        position_x: px,
+        position_y: py,
+        is_root: false,
+        status: 'inbox',
+      });
+      await loadNodes(currentMindmap.id);
+      const newFlow = useMindmapStore.getState().nodes.find((n) => n.data.backendId === created.id);
+      if (newFlow) {
+        setSelectedNode(newFlow);
+      }
+      showSuccess('Nœud enfant créé avec le rendu.');
+      handleCloseManualExecute();
+    } catch (error: unknown) {
+      console.error(error);
+      const detail = error instanceof ApiErrorResponse ? error.detail : 'Erreur lors de la création du nœud';
+      showError(detail);
+    } finally {
+      setSavingResultChild(false);
+    }
   };
 
   const handleExecuteTrigger = async () => {
@@ -443,6 +630,20 @@ const NodeDetails = () => {
           console.groupEnd();
         }
         setExecuteResult(result);
+        if (
+          result.success &&
+          outputType === 'mindmap_child' &&
+          result.output?.child_node_id &&
+          currentMindmap
+        ) {
+          await loadNodes(currentMindmap.id);
+          const nf = useMindmapStore.getState().nodes.find(
+            (n) => n.data.backendId === result.output.child_node_id,
+          );
+          if (nf) {
+            setSelectedNode(nf);
+          }
+        }
       }
     } catch (error: any) {
       const errorMessage = error.detail || error.message || 'Erreur lors de l\'exécution';
@@ -538,8 +739,20 @@ const NodeDetails = () => {
               multiline
               rows={3}
               size="small"
-              sx={{ mb: 2 }}
+              sx={{ mb: 1 }}
             />
+            {editDescription.trim().length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => setDescriptionMdDialogOpen(true)}
+                  sx={{ textTransform: 'none', color: '#00D9FF' }}
+                >
+                  Voir l’aperçu Markdown
+                </Button>
+              </Box>
+            )}
 
             {/* Sélecteur de statut */}
             <FormControl fullWidth size="small" sx={{ mb: 2 }}>
@@ -775,6 +988,34 @@ const NodeDetails = () => {
                         <DeleteIcon fontSize="small" />
                       </IconButton>
                     </Box>
+                    {isCronLikeTrigger(trigger.trigger_type) &&
+                      (() => {
+                        const sched = formatCronScheduleSummary(trigger.config);
+                        if (!sched) return null;
+                        return (
+                          <Box sx={{ mb: 1, pl: 4.25, pr: 0.5 }}>
+                            <Typography
+                              variant="caption"
+                              sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.45 }}
+                            >
+                              {sched.timeLine}
+                            </Typography>
+                            {sched.daysLine && (
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  color: 'text.secondary',
+                                  display: 'block',
+                                  lineHeight: 1.45,
+                                  mt: 0.25,
+                                }}
+                              >
+                                {sched.daysLine}
+                              </Typography>
+                            )}
+                          </Box>
+                        );
+                      })()}
                       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 1 }}>
                       <Chip
                         label={triggerLabels[trigger.trigger_type] || triggerLabels[getDisplayType(trigger.trigger_type)] || trigger.trigger_type}
@@ -1095,7 +1336,8 @@ const NodeDetails = () => {
             <RadioGroup
               row
               value={outputType}
-              onChange={(e) => setOutputType(e.target.value as 'screen' | 'email' | 'audio_tts' | 'audio_email')}
+              onChange={(e) => setOutputType(e.target.value as OutputRenderType)}
+              sx={{ flexWrap: 'wrap', gap: 0.5 }}
             >
               <FormControlLabel 
                 value="screen" 
@@ -1104,6 +1346,16 @@ const NodeDetails = () => {
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                     <ScreenIcon fontSize="small" />
                     <span>À l'écran</span>
+                  </Box>
+                } 
+              />
+              <FormControlLabel 
+                value="mindmap_child" 
+                control={<Radio />} 
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <NoteAddIcon fontSize="small" />
+                    <span>Nœud enfant (date + titre)</span>
                   </Box>
                 } 
               />
@@ -1128,6 +1380,10 @@ const NodeDetails = () => {
                 label="Audio par email" 
               />
             </RadioGroup>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              « Nœud enfant » enregistre le markdown sous le nœud courant avec le titre{' '}
+              <strong>AAAA-MM-JJ — nom du nœud</strong> (exécutions manuelles, planifiées et auto).
+            </Typography>
           </FormControl>
 
           {/* Configuration email (Par email ou Audio par email) */}
@@ -1268,6 +1524,14 @@ const NodeDetails = () => {
                   </Typography>
                 )}
               </Alert>
+
+              {executeResult.output?.child_node_id && (
+                <Alert severity="success" sx={{ mb: 1 }}>
+                  Nœud enfant créé :{' '}
+                  {executeResult.output.child_node_label ||
+                    `n°${executeResult.output.child_node_id}`}
+                </Alert>
+              )}
 
               {/* Lecteur audio (TTS) */}
               {executeResult.output?.audio_base64 && (
@@ -1601,6 +1865,51 @@ const NodeDetails = () => {
                   )}
                 </Box>
               )}
+
+              {executeResult.success &&
+                taskType === 'agent' &&
+                outputType === 'screen' &&
+                !executeResult.email_sent &&
+                !executeResult.output?.child_node_id &&
+                extractMarkdownFromExecuteOutput(executeResult.output) && (
+                  <Box
+                    sx={{
+                      mt: 2,
+                      p: 2,
+                      borderRadius: 1,
+                      border: '1px dashed',
+                      borderColor: 'rgba(0, 217, 255, 0.35)',
+                      bgcolor: 'rgba(0, 217, 255, 0.04)',
+                    }}
+                  >
+                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'text.primary' }}>
+                      Enregistrer le rendu dans le mindmap
+                    </Typography>
+                    <Typography variant="caption" sx={{ display: 'block', mb: 1.5, color: 'text.secondary' }}>
+                      Crée un nœud enfant sous « {selectedNode.data.label} » avec le markdown dans la description. Par défaut :{' '}
+                      {buildDefaultResultChildLabel(selectedNode.data.label || '')}.
+                    </Typography>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="Titre du nœud"
+                      placeholder={buildDefaultResultChildLabel(selectedNode.data.label || '')}
+                      value={resultChildLabel}
+                      onChange={(e) => setResultChildLabel(e.target.value)}
+                      sx={{ mb: 1.5 }}
+                    />
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      startIcon={savingResultChild ? <CircularProgress size={16} /> : <NoteAddIcon />}
+                      onClick={handleCreateResultChildNode}
+                      disabled={savingResultChild || !selectedNode.data.backendId}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {savingResultChild ? 'Création…' : 'Créer un nœud enfant avec ce rendu'}
+                    </Button>
+                  </Box>
+                )}
               
               {/* Message si l'email a été envoyé */}
               {executeResult.email_sent && (
@@ -1626,6 +1935,54 @@ const NodeDetails = () => {
             {isExecuting ? 'Exécution...' : 'Lancer'}
           </Button>
         )}
+      </DialogActions>
+    </Dialog>
+
+    <Dialog
+      open={descriptionMdDialogOpen}
+      onClose={() => setDescriptionMdDialogOpen(false)}
+      maxWidth="md"
+      fullWidth
+      scroll="paper"
+      PaperProps={{ sx: { maxHeight: '92vh' } }}
+    >
+      <DialogTitle>Aperçu Markdown</DialogTitle>
+      <DialogContent dividers sx={{ pt: 2 }}>
+        <Box
+          sx={{
+            minHeight: 200,
+            maxHeight: 'calc(92vh - 160px)',
+            overflow: 'auto',
+            p: 1.5,
+            bgcolor: 'rgba(139, 149, 168, 0.08)',
+            borderRadius: 1,
+            border: '1px solid rgba(139, 149, 168, 0.2)',
+            '& .markdown-body': {
+              color: 'text.primary',
+              fontSize: '0.9375rem',
+              lineHeight: 1.65,
+              '& h1, & h2, & h3': { color: 'text.primary', fontWeight: 600, mt: 1.25, mb: 0.5 },
+              '& p': { mb: 0.85 },
+              '& ul, & ol': { pl: 2.5, mb: 0.85 },
+              '& code': {
+                bgcolor: 'rgba(0,0,0,0.3)',
+                px: 0.5,
+                borderRadius: 0.5,
+                fontSize: '0.9em',
+              },
+              '& pre': { bgcolor: 'rgba(0,0,0,0.25)', p: 1.25, borderRadius: 1, overflow: 'auto' },
+              '& a': { color: '#00D9FF' },
+              '& table': { borderCollapse: 'collapse', width: '100%', '& th, & td': { border: '1px solid rgba(139,149,168,0.25)', p: 0.75 } },
+            },
+          }}
+        >
+          <ReactMarkdown className="markdown-body">{editDescription}</ReactMarkdown>
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setDescriptionMdDialogOpen(false)} variant="contained" sx={{ textTransform: 'none' }}>
+          Fermer
+        </Button>
       </DialogActions>
     </Dialog>
 

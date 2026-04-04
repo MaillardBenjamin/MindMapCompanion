@@ -13,7 +13,7 @@ from app.routers import settings as settings_router
 from app.routers import actions as actions_router
 from app.mcp.web_search_server import router as web_search_mcp_router
 from app.config import settings
-from app.services.scheduler import start_scheduler
+from app.services.scheduler import load_cron_triggers, start_scheduler
 
 # Configuration du logging
 logging.basicConfig(
@@ -186,7 +186,8 @@ async def startup_event():
     logger.info("🚀 Démarrage du scheduler...")
     scheduler = start_scheduler()
     app.state.scheduler = scheduler
-    logger.info("✅ Scheduler démarré avec succès")
+    await load_cron_triggers(scheduler)
+    logger.info("✅ Scheduler démarré (triggers cron chargés)")
 
 
 @app.on_event("shutdown")

@@ -366,8 +366,16 @@ const TextInput = () => {
                 }}
               />
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="caption" color="text.secondary">
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 1,
+                }}
+              >
+                <Typography variant="caption" color="text.secondary" sx={{ flex: '1 1 240px', minWidth: 0 }}>
                   L'IA analysera votre texte et créera des nœuds
                 </Typography>
                 <Button
@@ -381,7 +389,7 @@ const TextInput = () => {
                       <AIIcon />
                     )
                   }
-                  sx={{ minWidth: 120 }}
+                  sx={{ minWidth: 120, flexShrink: 0 }}
                 >
                   {isProcessing ? 'Analyse...' : 'Générer'}
                 </Button>
@@ -391,7 +399,15 @@ const TextInput = () => {
               {nodes.length > 1 && (
                 <>
                   <Divider sx={{ my: 2, borderColor: 'rgba(0, 217, 255, 0.1)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 1,
+                    }}
+                  >
                     <Box>
                       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                         Réorganiser avec l'IA
@@ -411,6 +427,7 @@ const TextInput = () => {
                           sx={{
                             borderColor: 'rgba(139, 92, 246, 0.5)',
                             color: '#8B5CF6',
+                            flexShrink: 0,
                             '&:hover': {
                             borderColor: '#8B5CF6',
                             backgroundColor: 'rgba(139, 92, 246, 0.1)',

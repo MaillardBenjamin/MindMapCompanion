@@ -98,9 +98,15 @@ RÈGLES CRITIQUES:
 
 - Si le texte fait référence à un nœud existant, utilise son ID EXACT comme parent_id
 
-- Sois EXHAUSTIF : si le texte mentionne plusieurs éléments hiérarchiques, crée TOUS les nœuds nécessaires, pas seulement le parent
+- AGENT AUTOMATISÉ / VEILLE / TÂCHE PLANIFIÉE (cron, horaire, « tous les lundis », « chaque jour à 8h », etc.) :
+  * Si l'utilisateur décrit UNE SEULE mission automatisée (un agent, une fréquence, un ou plusieurs sujets liés dans la même phrase), crée UNE SEULE suggestion « create » qui regroupe le sujet ET la planification.
+  * La description du nœud doit contenir à la fois le fond (quoi surveiller / traiter) et le quand (fréquence, jour, heure). Ne découpe PAS en plusieurs feuilles séparées pour « le thème A », « le thème B » et « l'horaire » — sauf si l'utilisateur demande explicitement plusieurs agents ou plusieurs pistes indépendantes.
+  * Interdit : créer un nœud dont le seul rôle est de répéter l'horaire (ex. titre du type « Hebdo : lun 07h » sans le contenu métier) lorsque le reste du texte décrit déjà une seule veille ; mets l'horaire dans la description du nœud principal de mission.
+  * Si un parent existe déjà (nœud sélectionné), un seul enfant suffit souvent pour cette demande.
 
-- Si le texte contient plusieurs idées distinctes, crée plusieurs suggestions
+- Sois EXHAUSTIF pour les listes et hiérarchies explicites : si le texte mentionne plusieurs éléments hiérarchiques INDÉPENDANTS (listes, projets distincts), crée TOUS les nœuds nécessaires.
+
+- Si le texte contient plusieurs idées DISTINCTES et SÉPARÉES (sans lien de même agent planifié), crée plusieurs suggestions
 
 - Préfère mettre à jour un nœud existant plutôt que d'en créer un similaire
 
@@ -748,7 +754,33 @@ INSTRUCTIONS CRITIQUES:
             
             logger.info(f"[MindmapOrganizer] ✅ Exécution terminée: {len(created_nodes)} nœuds créés, "
                       f"{len(updated_nodes)} nœuds mis à jour")
-            
+
+            assistant_triggers: list = []
+            if auto_apply and created_nodes:
+                try:
+                    from app.services.assistant_trigger_setup import (
+                        auto_create_triggers_for_leaves,
+                    )
+
+                    assistant_triggers = auto_create_triggers_for_leaves(
+                        db=db,
+                        user_id=user_id,
+                        user_text=text,
+                        created_nodes=created_nodes,
+                        existing_nodes=existing_nodes,
+                    )
+                    if assistant_triggers:
+                        logger.info(
+                            "[MindmapOrganizer] Triggers assistant créés: %s",
+                            assistant_triggers,
+                        )
+                except Exception as e:
+                    logger.error(
+                        "[MindmapOrganizer] Triggers assistant non créés (erreur non bloquante): %s",
+                        e,
+                        exc_info=True,
+                    )
+
             return AgentResponse(
                 success=True,
                 message=result.summary,
@@ -757,6 +789,7 @@ INSTRUCTIONS CRITIQUES:
                     "created_nodes": created_nodes,
                     "updated_nodes": updated_nodes,
                     "auto_applied": auto_apply,
+                    "assistant_triggers": assistant_triggers,
                 },
             )
             

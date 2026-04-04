@@ -265,6 +265,24 @@ async def execute_trigger_manually(
             
             output = {"message": "Action exécutée avec succès"}
 
+        # Nœud enfant dans le mindmap : date + titre du nœud courant, description = markdown
+        if (
+            payload.task_type == "agent"
+            and payload.output_type == "mindmap_child"
+            and output
+        ):
+            from app.services.agent_result_child_node import create_child_from_agent_output
+
+            parent_node = crud_mindmap.get_node(db_sync, trigger.node_id, current_user.id)
+            if not parent_node:
+                raise HTTPException(status_code=404, detail="Nœud introuvable")
+            try:
+                child = create_child_from_agent_output(db_sync, parent_node, output)
+                output["child_node_id"] = child.id
+                output["child_node_label"] = child.label
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
         # Extraire le texte pour TTS (audio_tts / audio_email)
         def _text_for_tts(out):
             if not out:

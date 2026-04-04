@@ -155,7 +155,144 @@ async def poll_imap() -> None:
         log.warning("Poll IMAP failed: %s", e, exc_info=False)
 
 
-async def execute_trigger_with_config(trigger: MindmapTrigger) -> None:
+async def _write_agent_results_to_graph(
+    trigger: MindmapTrigger,
+    result: dict,
+    db_sync,
+) -> None:
+    """
+    Écrit les résultats d'un agent dans le graphe sous forme de nœuds enfants
+    rattachés au nœud du trigger.
+
+    Gère deux formats de sortie :
+    - JSON structuré avec ``key_findings`` : un nœud par finding
+    - Markdown brut : un nœud résumé unique
+    """
+    from app.models.mindmap import Node as MindmapNode
+    from app.crud.mindmap import create_node as crud_create_node
+    from app.schemas.mindmap import NodeCreate
+
+    logger_wg = logging.getLogger(__name__)
+
+    parent_node = (
+        db_sync.query(MindmapNode)
+        .filter(MindmapNode.id == trigger.node_id)
+        .first()
+    )
+    if not parent_node:
+        logger_wg.error(
+            "❌ [WriteToGraph] Nœud %d introuvable", trigger.node_id
+        )
+        return
+
+    output_parsed = result.get("output_parsed")
+    output_raw = result.get("output_raw", "")
+    agent_name = result.get("agent_name", "Agent")
+
+    if not output_parsed and not output_raw:
+        return
+
+    mindmap_id = parent_node.mindmap_id
+    parent_id = parent_node.id
+
+    existing_children = (
+        db_sync.query(MindmapNode)
+        .filter(
+            MindmapNode.parent_id == parent_id,
+            MindmapNode.mindmap_id == mindmap_id,
+        )
+        .count()
+    )
+
+    nodes_created = []
+
+    if isinstance(output_parsed, dict) and isinstance(
+        output_parsed.get("key_findings"), list
+    ):
+        from datetime import datetime as _dt
+
+        date_label = _dt.now().strftime("%d/%m/%Y")
+        report_node = NodeCreate(
+            mindmap_id=mindmap_id,
+            parent_id=parent_id,
+            label=f"Rapport {date_label}"[:50],
+            description=output_parsed.get("executive_summary", ""),
+            position_x=parent_node.position_x + 200,
+            position_y=parent_node.position_y + (existing_children * 80),
+            status="inbox",
+        )
+        try:
+            report = crud_create_node(db_sync, report_node)
+            nodes_created.append(report.id)
+        except Exception as e:
+            logger_wg.error("❌ [WriteToGraph] Erreur création nœud rapport : %s", e)
+            return
+
+        for i, finding in enumerate(output_parsed["key_findings"]):
+            if not isinstance(finding, dict):
+                continue
+            label = (finding.get("title") or f"Point {i + 1}")[:50]
+            parts = [finding.get("description", "")]
+            if finding.get("source"):
+                parts.append(f"Source : {finding['source']}")
+            if finding.get("importance"):
+                parts.append(f"Importance : {finding['importance']}")
+            description = "\n".join(p for p in parts if p)
+
+            node_create = NodeCreate(
+                mindmap_id=mindmap_id,
+                parent_id=report.id,
+                label=label,
+                description=description,
+                position_x=report.position_x + 200,
+                position_y=report.position_y + (i * 80),
+                status="inbox",
+            )
+            try:
+                new_node = crud_create_node(db_sync, node_create)
+                nodes_created.append(new_node.id)
+            except Exception as e:
+                logger_wg.error(
+                    "❌ [WriteToGraph] Erreur création nœud finding : %s", e
+                )
+    else:
+        from datetime import datetime as _dt
+
+        date_label = _dt.now().strftime("%d/%m/%Y")
+        summary = ""
+        if isinstance(output_parsed, dict):
+            summary = output_parsed.get("executive_summary", "")
+        if not summary:
+            summary = output_raw[:200]
+        label = f"Rapport {agent_name} – {date_label}"[:50]
+
+        node_create = NodeCreate(
+            mindmap_id=mindmap_id,
+            parent_id=parent_id,
+            label=label,
+            description=output_raw[:4000],
+            position_x=parent_node.position_x + 200,
+            position_y=parent_node.position_y + (existing_children * 80),
+            status="inbox",
+        )
+        try:
+            new_node = crud_create_node(db_sync, node_create)
+            nodes_created.append(new_node.id)
+        except Exception as e:
+            logger_wg.error(
+                "❌ [WriteToGraph] Erreur création nœud résumé : %s", e
+            )
+
+    if nodes_created:
+        logger_wg.info(
+            "✅ [WriteToGraph] %d nœud(s) créé(s) sous le nœud %d : %s",
+            len(nodes_created),
+            parent_id,
+            nodes_created,
+        )
+
+
+async def execute_trigger_with_config(trigger: MindmapTrigger | int) -> None:
     """
     Exécute un trigger en utilisant sa configuration (agent ou action).
     
@@ -169,7 +306,8 @@ async def execute_trigger_with_config(trigger: MindmapTrigger) -> None:
     Sinon, log simplement l'exécution.
     
     Args:
-        trigger: Instance Trigger à exécuter.
+        trigger: Instance Trigger OU **id entier** (jobs APScheduler : préférer l'id pour
+            éviter les instances ORM détachées/expirées).
     
     Note:
         Cette fonction est appelée par APScheduler pour les triggers cron
@@ -177,11 +315,38 @@ async def execute_trigger_with_config(trigger: MindmapTrigger) -> None:
         compatibilité avec les CRUD existants.
     """
     import logging
+    from types import SimpleNamespace
+
     from app.services.configurable_agent_service import configurable_agent_service
     from app.crud import mindmap as crud_mindmap
     from app.database import SessionLocal
     
     logger = logging.getLogger(__name__)
+    tid = trigger if isinstance(trigger, int) else trigger.id
+    # Recharger depuis la DB (session synchrone) : les jobs cron ne doivent pas
+    # réutiliser un ORM détaché après fermeture de la session de load_cron_triggers.
+    _db_reload = SessionLocal()
+    try:
+        row = _db_reload.query(MindmapTrigger).filter(MindmapTrigger.id == tid).first()
+    finally:
+        _db_reload.close()
+    if not row:
+        logger.error("❌ [Scheduler] Trigger %s introuvable en base", tid)
+        return
+    cfg_raw = row.config
+    if cfg_raw is None:
+        cfg = {}
+    elif isinstance(cfg_raw, dict):
+        cfg = dict(cfg_raw)
+    else:
+        cfg = {}
+    tt = getattr(row.trigger_type, "value", row.trigger_type)
+    trigger = SimpleNamespace(
+        id=row.id,
+        node_id=row.node_id,
+        trigger_type=tt,
+        config=cfg,
+    )
     logger.info(f"🔄 [Scheduler] Exécution du trigger {trigger.id} (type: {trigger.trigger_type})")
     
     # `config` est stocké en JSON(B) et peut être NULL selon l'historique des données/migrations.
@@ -328,7 +493,49 @@ async def execute_trigger_with_config(trigger: MindmapTrigger) -> None:
                     logger.info(f"✅ [Scheduler] Email envoyé à {to_email} pour le trigger {trigger.id}")
                 else:
                     logger.error(f"❌ [Scheduler] Échec de l'envoi d'email pour le trigger {trigger.id}")
+
+            if output_type == "mindmap_child" and result:
+                from app.crud.mindmap import get_node_by_id
+                from app.services.agent_result_child_node import create_child_from_agent_output
+
+                parent_node = get_node_by_id(db_sync, trigger.node_id)
+                if parent_node:
+                    try:
+                        normalized = {
+                            "output_raw": result.get("output_raw"),
+                            "output_parsed": result.get("output_parsed"),
+                        }
+                        child = create_child_from_agent_output(db_sync, parent_node, normalized)
+                        logger.info(
+                            "✅ [Scheduler] Nœud enfant mindmap_child créé: id=%s label=%s",
+                            child.id,
+                            child.label,
+                        )
+                    except ValueError as e:
+                        logger.error(
+                            "❌ [Scheduler] Échec création nœud mindmap_child: %s",
+                            e,
+                        )
+                else:
+                    logger.error(
+                        "❌ [Scheduler] Nœud parent %s introuvable pour mindmap_child",
+                        trigger.node_id,
+                    )
             
+            # Écrire les résultats dans le graphe si configuré
+            if config.get("write_to_graph") and result:
+                try:
+                    await _write_agent_results_to_graph(
+                        trigger=trigger,
+                        result=result,
+                        db_sync=db_sync,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "❌ [Scheduler] Erreur write_to_graph pour le trigger %d : %s",
+                        trigger.id, e, exc_info=True,
+                    )
+
             logger.info(f"✅ [Scheduler] Agent exécuté avec succès pour le trigger {trigger.id}")
             
         elif task_type == "action":
@@ -342,7 +549,17 @@ async def execute_trigger_with_config(trigger: MindmapTrigger) -> None:
                         trigger_id=trigger.id,
                     )
             logger.info(f"✅ [Scheduler] Actions exécutées pour le trigger {trigger.id}")
-        
+
+        # Notifier les clients web (polling sync-revision) que le graphe peut avoir changé
+        try:
+            from app.services.mindmap_revision import bump_mindmap_revision
+
+            n = crud_mindmap.get_node_by_id(db_sync, trigger.node_id)
+            if n:
+                bump_mindmap_revision(n.mindmap_id)
+        except Exception as bump_err:
+            logger.warning("Révision mindmap non mise à jour: %s", bump_err)
+
         # Mettre à jour last_fired_at : on le fait en async (session async dédiée) pour éviter
         # de conserver trop longtemps la session sync et pour standardiser les écritures côté scheduler.
         AsyncSessionLocal = get_AsyncSessionLocal()
@@ -441,69 +658,121 @@ def parse_cron_expression(cron_expr: str) -> dict:
     return params
 
 
+def cron_expression_from_trigger_config(config: dict) -> str | None:
+    """
+    Expression cron pour APScheduler : priorité à `cron_expression` en base,
+    sinon reconstruction depuis cron_hour / cron_minute / cron_days (logique alignée sur le frontend).
+    """
+    raw = config.get("cron_expression")
+    if raw is not None and str(raw).strip():
+        return str(raw).strip()
+
+    hour = config.get("cron_hour")
+    minute = config.get("cron_minute")
+    days = config.get("cron_days")
+    if hour is None and minute is None and not days:
+        return None
+
+    local_h = int(hour) if hour is not None else 9
+    local_m = int(minute) if minute is not None else 0
+    day_list: list[int] = []
+    if isinstance(days, list):
+        for x in days:
+            try:
+                day_list.append(int(x))
+            except (TypeError, ValueError):
+                continue
+
+    now = datetime.now().astimezone()
+    local_dt = now.replace(hour=local_h, minute=local_m, second=0, microsecond=0)
+    utc_dt = local_dt.astimezone(timezone.utc)
+    utc_h = utc_dt.hour
+    utc_m = utc_dt.minute
+
+    if not day_list or len(day_list) == 7:
+        return f"{utc_m} {utc_h} * * *"
+    days_str = ",".join(str(d) for d in sorted(set(day_list)))
+    return f"{utc_m} {utc_h} * * {days_str}"
+
+
 async def load_cron_triggers(scheduler: AsyncIOScheduler) -> None:
     """
     Charge les triggers cron depuis la DB et les ajoute au scheduler.
     
-    Récupère tous les triggers de type "cron" activés, parse leur expression
-    cron, et les ajoute comme jobs APScheduler. Supprime d'abord les jobs
-    existants pour éviter les doublons.
+    Utilise la **session SQLAlchemy synchrone** (comme le CRUD mindmap) pour éviter
+    une dépendance silencieuse à asyncpg / une tâche asyncio qui échoue sans log.
     
-    Args:
-        scheduler: Instance AsyncIOScheduler où ajouter les jobs.
-    
-    Note:
-        Les triggers sans expression cron valide sont ignorés avec un warning.
-        Les erreurs lors de l'ajout sont loggées mais n'interrompent pas le processus.
+    Les jobs passent uniquement l'**id** du trigger à execute_trigger_with_config
+    (instance ORM rechargée au moment de l'exécution).
     """
     import logging
+    from app.database import SessionLocal as SyncSessionLocal
+
     logger = logging.getLogger(__name__)
-    
-    AsyncSessionLocal = get_AsyncSessionLocal()
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            # Convertir l'enum PostgreSQL en texte pour la comparaison
-            # La colonne trigger_type est un enum dans la DB mais String dans le modèle
-            result = await session.execute(
-                select(MindmapTrigger).where(
-                    MindmapTrigger.enabled.is_(True),
-                    text("triggers.trigger_type::text = :trigger_type_val")
-                ).params(trigger_type_val=TriggerType.cron.value)
+    db = SyncSessionLocal()
+    rows: list = []
+    try:
+        rows = (
+            db.query(MindmapTrigger)
+            .filter(MindmapTrigger.enabled.is_(True))
+            .filter(text("triggers.trigger_type::text = :trigger_type_val"))
+            .params(trigger_type_val=TriggerType.cron.value)
+            .all()
+        )
+    except Exception as e:
+        logger.error(
+            "❌ [Scheduler] Impossible de lister les triggers cron (session sync): %s",
+            e,
+            exc_info=True,
+        )
+        return
+    finally:
+        db.close()
+
+    logger.info("📅 [Scheduler] %d trigger(s) cron actif(s) trouvé(s) en base", len(rows))
+
+    for trigger_row in rows:
+        config = trigger_row.config or {}
+        if not isinstance(config, dict):
+            config = {}
+        cron_expression = config.get("cron_expression")
+        if not cron_expression:
+            cron_expression = cron_expression_from_trigger_config(config)
+        tid = trigger_row.id
+        if not cron_expression:
+            logger.warning(
+                "⚠️ [Scheduler] Trigger cron %s n'a pas d'expression cron "
+                "(config vide ou incomplète : %s)",
+                tid,
+                config,
             )
-            triggers = result.scalars().all()
-            
-            for trigger in triggers:
-                # Gérer le cas où config est None
-                config = trigger.config or {}
-                cron_expression = config.get("cron_expression")
-                if not cron_expression:
-                    logger.warning(f"⚠️ [Scheduler] Trigger cron {trigger.id} n'a pas d'expression cron (config: {config})")
-                    continue
-                
-                # Supprimer le job existant s'il existe
-                job_id = f"cron_trigger_{trigger.id}"
-                try:
-                    scheduler.remove_job(job_id)
-                except:
-                    pass
-                
-                # Ajouter le job cron
-                try:
-                    # APScheduler peut utiliser directement l'expression cron en string
-                    # ou on peut parser pour plus de contrôle
-                    cron_params = parse_cron_expression(cron_expression)
-                    
-                    scheduler.add_job(
-                        execute_trigger_with_config,
-                        trigger="cron",
-                        id=job_id,
-                        replace_existing=True,
-                        args=[trigger],
-                        **cron_params
-                    )
-                    logger.info(f"✅ [Scheduler] Trigger cron {trigger.id} ajouté: {cron_expression}")
-                except Exception as e:
-                    logger.error(f"❌ [Scheduler] Erreur lors de l'ajout du trigger cron {trigger.id}: {e}", exc_info=True)
+            continue
+
+        job_id = f"cron_trigger_{tid}"
+        try:
+            scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+        try:
+            cron_params = parse_cron_expression(cron_expression)
+            scheduler.add_job(
+                execute_trigger_with_config,
+                trigger="cron",
+                id=job_id,
+                replace_existing=True,
+                args=[tid],
+                misfire_grace_time=300,
+                **cron_params,
+            )
+            logger.info("✅ [Scheduler] Trigger cron %s ajouté: %s", tid, cron_expression)
+        except Exception as e:
+            logger.error(
+                "❌ [Scheduler] Erreur lors de l'ajout du trigger cron %s: %s",
+                tid,
+                e,
+                exc_info=True,
+            )
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -541,12 +810,7 @@ def start_scheduler() -> AsyncIOScheduler:
     # Job pour vérifier les triggers date_reached
     scheduler.add_job(run_due_triggers, "interval", minutes=1, id="run_due_triggers")
     
-    # Charger les triggers cron au démarrage
-    async def load_cron_on_startup():
-        await load_cron_triggers(scheduler)
-    
-    # Exécuter le chargement des triggers cron au démarrage
-    asyncio.create_task(load_cron_on_startup())
+    # Chargement initial des triggers cron : fait dans main.py (startup) via await load_cron_triggers(...)
     
     # Recharger les triggers cron toutes les 5 minutes (au cas où ils sont modifiés)
     async def reload_cron_triggers():

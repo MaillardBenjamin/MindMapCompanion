@@ -370,6 +370,35 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         mindmaps: state.mindmaps.map(m => m.id === mindmapId ? updated : m),
         currentMindmap: state.currentMindmap?.id === mindmapId ? updated : state.currentMindmap,
       }));
+
+      // Garder le nœud racine synchronisé avec le nom du mindmap (si ce mindmap est courant)
+      if (name && get().currentMindmap?.id === mindmapId) {
+        const state = get();
+        const rootNode =
+          state.nodes.find((n) => n.data.isRoot) ||
+          state.nodes.find((n) => n.data.backendParentId == null);
+
+        if (rootNode?.data.backendId) {
+          // Update UI immédiatement
+          set((s) => ({
+            nodes: s.nodes.map((n) =>
+              n.id === rootNode.id
+                ? { ...n, data: { ...n.data, label: name } }
+                : n
+            ),
+          }));
+
+          // Persister côté backend
+          try {
+            await nodesApi.update(rootNode.data.backendId, { label: name });
+          } catch (error) {
+            const errorMessage = error instanceof ApiErrorResponse
+              ? error.detail
+              : 'Erreur lors de la mise à jour du nœud racine';
+            set({ error: errorMessage });
+          }
+        }
+      }
     } catch (error) {
       const errorMessage = error instanceof ApiErrorResponse 
         ? error.detail 

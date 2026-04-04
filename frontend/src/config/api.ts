@@ -19,6 +19,7 @@ export const API_ENDPOINTS = {
     LIST: '/api/mindmaps',
     CREATE: '/api/mindmaps',
     GET: (id: number) => `/api/mindmaps/${id}`,
+    SYNC_REVISION: (id: number) => `/api/mindmaps/${id}/sync-revision`,
     UPDATE: (id: number) => `/api/mindmaps/${id}`,
     DELETE: (id: number) => `/api/mindmaps/${id}`,
   },

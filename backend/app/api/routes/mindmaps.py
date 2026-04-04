@@ -9,8 +9,10 @@ from app.schemas.mindmap import (
     MindmapCreate,
     MindmapUpdate,
     MindmapResponse,
+    MindmapSyncRevisionResponse,
     MindmapWithNodes,
 )
+from app.services.mindmap_revision import get_mindmap_revision
 from app.crud import mindmap as crud_mindmap
 
 router = APIRouter(prefix="/api/mindmaps", tags=["mindmaps"])
@@ -37,6 +39,22 @@ def get_mindmaps(
     """Récupère tous les mindmaps de l'utilisateur connecté"""
     mindmaps = crud_mindmap.get_mindmaps_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
     return mindmaps
+
+
+@router.get("/{mindmap_id}/sync-revision", response_model=MindmapSyncRevisionResponse)
+def get_mindmap_sync_revision(
+    mindmap_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Révision pour synchroniser le front avec les changements faits en arrière-plan (cron, etc.)."""
+    db_mindmap = crud_mindmap.get_mindmap(db, mindmap_id=mindmap_id, user_id=current_user.id)
+    if not db_mindmap:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Mindmap introuvable",
+        )
+    return MindmapSyncRevisionResponse(revision=get_mindmap_revision(mindmap_id))
 
 
 @router.get("/{mindmap_id}", response_model=MindmapWithNodes)

@@ -19,12 +19,13 @@ import { AutoAwesome as OrganizeIcon, Visibility as VisibilityIcon, VisibilityOf
 import MindmapNode from './MindmapNode';
 import MindmapEdge from './MindmapEdge';
 import { useMindmapStore, type MindmapNodeData } from '../../stores/mindmapStore';
-import { triggersApi, type TriggerResponse } from '../../services/api';
+import { mindmapsApi, triggersApi, type TriggerResponse } from '../../services/api';
 import { STATUS_ORDER, getStatusColor, getStatusLabel } from '../../utils/nodeStatus';
 import type { NodeStatus } from '../../../../shared/types';
 
 const MindmapCanvas = () => {
   const mindmapStore = useMindmapStore();
+  const currentMindmapId = useMindmapStore((s) => s.currentMindmap?.id);
   const { 
     nodes: storeNodes, 
     edges: storeEdges, 
@@ -39,6 +40,7 @@ const MindmapCanvas = () => {
   } = mindmapStore;
   
   const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSyncRevisionRef = useRef<number | null>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(storeEdges);
@@ -303,6 +305,37 @@ const MindmapCanvas = () => {
     },
     [mindmapStore]
   );
+
+  // Rafraîchir le graphe si un trigger cron (ou autre job) a modifié le mindmap en arrière-plan
+  useEffect(() => {
+    if (currentMindmapId == null) {
+      lastSyncRevisionRef.current = null;
+      return;
+    }
+    lastSyncRevisionRef.current = null;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const { revision } = await mindmapsApi.getSyncRevision(currentMindmapId);
+        if (cancelled) return;
+        const prev = lastSyncRevisionRef.current;
+        lastSyncRevisionRef.current = revision;
+        if (prev !== null && revision > prev) {
+          await useMindmapStore.getState().loadNodes(currentMindmapId);
+        }
+      } catch (e) {
+        console.error('[MindmapCanvas] sync-revision:', e);
+      }
+    };
+
+    void poll();
+    const intervalId = window.setInterval(poll, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [currentMindmapId]);
 
   // Charger les triggers quand un nœud est sélectionné
   // Note: On utilise une ref pour éviter la boucle infinie causée par nodes dans les dépendances
