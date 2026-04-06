@@ -98,11 +98,13 @@ RÈGLES CRITIQUES:
 
 - Si le texte fait référence à un nœud existant, utilise son ID EXACT comme parent_id
 
-- AGENT AUTOMATISÉ / VEILLE / TÂCHE PLANIFIÉE (cron, horaire, « tous les lundis », « chaque jour à 8h », etc.) :
-  * Si l'utilisateur décrit UNE SEULE mission automatisée (un agent, une fréquence, un ou plusieurs sujets liés dans la même phrase), crée UNE SEULE suggestion « create » qui regroupe le sujet ET la planification.
-  * La description du nœud doit contenir à la fois le fond (quoi surveiller / traiter) et le quand (fréquence, jour, heure). Ne découpe PAS en plusieurs feuilles séparées pour « le thème A », « le thème B » et « l'horaire » — sauf si l'utilisateur demande explicitement plusieurs agents ou plusieurs pistes indépendantes.
-  * Interdit : créer un nœud dont le seul rôle est de répéter l'horaire (ex. titre du type « Hebdo : lun 07h » sans le contenu métier) lorsque le reste du texte décrit déjà une seule veille ; mets l'horaire dans la description du nœud principal de mission.
-  * Si un parent existe déjà (nœud sélectionné), un seul enfant suffit souvent pour cette demande.
+- TÂCHE PLANIFIÉE / RÉCURRENTE (cron, horaire, « tous les lundis », « chaque jour à 8h », etc.) :
+  * Si l'utilisateur décrit UNE SEULE tâche planifiée, crée UNE SEULE suggestion « create » qui regroupe le sujet ET la planification.
+  * La description du nœud doit contenir à la fois le SUJET (quoi) et la FRÉQUENCE (quand). Ne découpe PAS en plusieurs feuilles séparées — sauf si l'utilisateur demande explicitement plusieurs tâches indépendantes.
+  * Interdit : créer un nœud dont le seul rôle est de répéter l'horaire sans le contenu métier.
+  * Si un parent existe déjà (nœud sélectionné), un seul enfant suffit souvent.
+
+  ⚠️ PLACEMENT : classe TOUJOURS un nouveau nœud selon son SUJET PRINCIPAL (le fond de la demande), PAS selon le mécanisme technique (planification, automatisation, etc.). Rattache le nœud au parent thématique existant qui correspond au sujet, ou crée un nouveau parent thématique si nécessaire. Ne rattache JAMAIS un nœud à un parent existant dont le thème ne correspond pas au sujet de la demande, même si les deux partagent un aspect secondaire (fréquence, format, etc.).
 
 - Sois EXHAUSTIF pour les listes et hiérarchies explicites : si le texte mentionne plusieurs éléments hiérarchiques INDÉPENDANTS (listes, projets distincts), crée TOUS les nœuds nécessaires.
 

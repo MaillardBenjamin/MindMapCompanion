@@ -494,6 +494,81 @@ async def execute_trigger_with_config(trigger: MindmapTrigger | int) -> None:
                 else:
                     logger.error(f"❌ [Scheduler] Échec de l'envoi d'email pour le trigger {trigger.id}")
 
+            elif output_type == "audio_email" and config.get("email_to") and result:
+                from app.services.tts_service import text_to_speech_mp3
+                from app.services.email_smtp import (
+                    format_agent_output_as_email,
+                    send_email_with_attachment,
+                )
+
+                def _text_for_scheduler_tts(out: dict) -> str:
+                    if not out:
+                        return ""
+                    if out.get("output_raw"):
+                        return str(out["output_raw"]).strip()
+                    if out.get("message"):
+                        return str(out["message"]).strip()
+                    return ""
+
+                text_tts = _text_for_scheduler_tts(result)
+                to_email = config.get("email_to")
+                if not text_tts:
+                    logger.error(
+                        "❌ [Scheduler] Pas de texte pour audio_email (trigger %s)",
+                        trigger.id,
+                    )
+                else:
+                    text_for_tts = text_tts
+                    try:
+                        from app.agents.tts_preprocessor_agent import tts_preprocessor_agent
+
+                        prep = await tts_preprocessor_agent.execute(input_text=text_tts)
+                        if prep.success and prep.data and isinstance(prep.data.get("text"), str):
+                            text_for_tts = (prep.data.get("text") or "").strip() or text_tts
+                    except Exception as prep_err:
+                        logger.warning(
+                            "[Scheduler] Préprocesseur TTS ignoré pour trigger %s: %s",
+                            trigger.id,
+                            prep_err,
+                        )
+                    mp3_bytes = text_to_speech_mp3(text_for_tts, lang="fr")
+                    if not mp3_bytes:
+                        logger.error(
+                            "❌ [Scheduler] Échec génération TTS (trigger %s)",
+                            trigger.id,
+                        )
+                    else:
+                        email_subject = config.get("email_subject") or (
+                            f"Audio – Résultat de l'agent {agent.name}"
+                        )
+                        body_text, body_html = format_agent_output_as_email(
+                            output_raw=result.get("output_raw", ""),
+                            output_parsed=result.get("output_parsed"),
+                            agent_name=agent.name,
+                            input_text=input_text,
+                            execution_time_ms=result.get("execution_time_ms"),
+                        )
+                        ok = send_email_with_attachment(
+                            to_email=to_email,
+                            subject=email_subject,
+                            body_text=body_text,
+                            body_html=body_html,
+                            attachment_bytes=mp3_bytes,
+                            attachment_filename="resultat_tts.mp3",
+                            attachment_mimetype="audio/mpeg",
+                        )
+                        if ok:
+                            logger.info(
+                                "✅ [Scheduler] Audio par email envoyé à %s (trigger %s)",
+                                to_email,
+                                trigger.id,
+                            )
+                        else:
+                            logger.error(
+                                "❌ [Scheduler] Échec envoi audio_email pour le trigger %s",
+                                trigger.id,
+                            )
+
             if output_type == "mindmap_child" and result:
                 from app.crud.mindmap import get_node_by_id
                 from app.services.agent_result_child_node import create_child_from_agent_output

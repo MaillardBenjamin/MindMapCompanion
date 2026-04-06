@@ -84,6 +84,56 @@ def test_parse_recurring_schedule_none_without_cues():
     assert ats.parse_recurring_schedule_french("organiser mes idées sans horaire") is None
 
 
+def test_infer_output_delivery_audio_email():
+    t = (
+        "Je veux recevoir tous les jours à 7h un audio à l'adresse "
+        "maillard.benjamin@gmail.com de la météo du jour."
+    )
+    d = ats.infer_output_delivery_from_text(t)
+    assert d["output_type"] == "audio_email"
+    assert d["email_to"] == "maillard.benjamin@gmail.com"
+
+
+def test_infer_output_delivery_email_par_mail():
+    d = ats.infer_output_delivery_from_text(
+        "Envoie le résumé par mail à reports@example.com chaque lundi"
+    )
+    assert d["output_type"] == "email"
+    assert d["email_to"] == "reports@example.com"
+
+
+def test_infer_output_delivery_no_false_positive_bare_address():
+    d = ats.infer_output_delivery_from_text(
+        "Demande à jean@dupont.fr pour la planification météo sans envoi"
+    )
+    assert d["output_type"] == "mindmap_child"
+    assert d["email_to"] is None
+
+
+def test_infer_output_delivery_screen():
+    d = ats.infer_output_delivery_from_text(
+        "Chaque matin à 8h affiche la météo sur l'écran"
+    )
+    assert d["output_type"] == "screen"
+    assert d["email_to"] is None
+
+
+def test_infer_output_delivery_audio_tts():
+    d = ats.infer_output_delivery_from_text(
+        "Tous les jours à 7h je veux un audio de la météo du jour"
+    )
+    assert d["output_type"] == "audio_tts"
+    assert d["email_to"] is None
+
+
+def test_infer_output_delivery_screen_not_weaker_than_spoken():
+    """Audio + écran → TTS (pas seulement affichage texte)."""
+    d = ats.infer_output_delivery_from_text(
+        "Rappel quotidien : audio de la météo à l'écran"
+    )
+    assert d["output_type"] == "audio_tts"
+
+
 def test_leaf_matches_cron_context():
     assert ats.leaf_matches_cron_context("Agent de veille — lun 07:00", "Automatisé") is True
     assert ats.leaf_matches_cron_context("Répercussions sur la bourse", "Impact climat") is False
@@ -227,6 +277,35 @@ def test_auto_triggers_leaves_when_llm_picks_agent(sync_db_session):
         assert t.config.get("task_type") == "agent"
         assert t.config.get("selected_agent") == str(agent.id)
         assert t.config.get("output_type") == "mindmap_child"
+
+
+def test_auto_trigger_infers_audio_email_in_config(sync_db_session):
+    user, created_nodes, existing_nodes, agent, _parent_id = _seed_user_mindmap_tree(
+        sync_db_session
+    )
+    leaf_only = [c for c in created_nodes if c["label"] == "Tache A"]
+
+    def fake_llm(_prompt: str):
+        return {"agent_id": agent.id, "reasoning": "météo"}
+
+    user_phrase = (
+        "Je veux recevoir tous les jours à 7h un audio à l'adresse "
+        "maillard.benjamin@gmail.com de la météo du jour."
+    )
+    with patch.object(ats, "_run_agent_choice_llm", side_effect=fake_llm):
+        out = ats.auto_create_triggers_for_leaves(
+            sync_db_session,
+            user_id=user.id,
+            user_text=user_phrase,
+            created_nodes=leaf_only,
+            existing_nodes=existing_nodes,
+        )
+
+    assert len(out) == 1
+    t = sync_db_session.query(Trigger).filter(Trigger.id == out[0]["trigger_id"]).one()
+    assert t.config.get("output_type") == "audio_email"
+    assert t.config.get("email_to") == "maillard.benjamin@gmail.com"
+    assert t.trigger_type == "cron"
 
 
 def test_mixed_cron_on_veille_leaf_manual_on_other(sync_db_session):

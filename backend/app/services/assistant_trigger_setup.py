@@ -2,7 +2,8 @@
 Configuration automatique des triggers après génération de nœuds (Assistant IA).
 
 Sélection d'un agent configurable via un appel LLM court, puis création de triggers
-sur chaque feuille du lot ``created_nodes``. Type de rendu par défaut : ``mindmap_child``.
+sur chaque feuille du lot ``created_nodes``. Type de rendu par défaut : ``mindmap_child`` ;
+détection heuristique du texte pour ``screen``, ``email``, ``audio_tts``, ``audio_email``.
 Si le texte utilisateur décrit une récurrence (ex. « tous les lundi à 7h »), les feuilles
 dont le libellé/description évoquent une exécution planifiée reçoivent un trigger ``cron``
 avec heure et jours initialisés.
@@ -24,6 +25,8 @@ from app.schemas.mindmap import TriggerCreate
 from app.services.scheduler import cron_expression_from_trigger_config
 
 logger = logging.getLogger(__name__)
+
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
 # Feuille « agent / veille / horaire » : reçoit le cron si plusieurs feuilles et planification détectée
 _CRON_LEAF_HINT = re.compile(
@@ -187,6 +190,104 @@ def parse_recurring_schedule_french(text: str) -> Optional[Dict[str, Any]]:
     return {"cron_days": cron_days, "cron_hour": hour, "cron_minute": minute}
 
 
+def infer_output_delivery_from_text(user_text: str) -> Dict[str, Optional[str]]:
+    """
+    Déduit ``output_type`` et champs email depuis une phrase utilisateur (sans LLM).
+
+    Valeurs possibles pour ``output_type`` :
+    - ``audio_email`` : sortie parlée + livraison à une adresse extraite.
+    - ``email`` : livraison texte par courriel + adresse + intention d'envoi / réception.
+    - ``audio_tts`` : sortie parlée sans envoi par mail (synonyme du rendu « Audio (TTS) »).
+    - ``screen`` : affichage dans l'interface (synonyme du rendu « À l'écran »).
+    - ``mindmap_child`` : défaut lorsqu'aucun canal n'est identifiable clairement.
+
+    Retourne ``output_type``, ``email_to``, ``email_subject`` (motif « sujet : ... »).
+    """
+    default: Dict[str, Optional[str]] = {
+        "output_type": "mindmap_child",
+        "email_to": None,
+        "email_subject": None,
+    }
+    if not user_text or not str(user_text).strip():
+        return default
+
+    text = str(user_text)
+    t_lower = text.lower().replace("’", "'")
+
+    emails = _EMAIL_RE.findall(text)
+    email_to = emails[0] if emails else None
+
+    wants_spoken_output = bool(
+        re.search(
+            r"\baudio(s)?\b|\btts\b|text[-\s]?to[-\s]?speech|synthèse\s+vocale|"
+            r"fichier\s+(audio|son|mp3)|\b(mp3|wav|mpeg)\b|"
+            r"\b(écouter|entendre|à\s+l['']oral)\b",
+            t_lower,
+        )
+    )
+
+    wants_on_screen = bool(
+        re.search(
+            r"\b(à|sur)\s+l['']?(?:é|e)cran\b|"
+            r"\baffich(?:er|age)?\s+(?:sur\s+)?l['']?(?:é|e)cran\b|"
+            r"\bdans\s+l['']?(?:application|appli|interface)\b",
+            t_lower,
+        )
+    )
+
+    mail_delivery_intent = bool(
+        re.search(
+            r"\b(par|via|avec|en)\s+(courriel|mail|mél|emails?|e-mail)\b|"
+            r"\bà\s+l['']adresse\b|"
+            r"\benvoy",
+            t_lower,
+        )
+    )
+
+    recevoir_with_address = bool(re.search(r"\brecevoir\b", t_lower)) and bool(email_to)
+
+    subj_m = re.search(
+        r"\bsujet\s*(?:email|courriel)?\s*[:]\s*([^\n.]{1,200})",
+        text,
+        re.IGNORECASE,
+    )
+    email_subject = subj_m.group(1).strip() if subj_m else None
+
+    # 1) Audio + adresse → audio par email
+    if email_to and wants_spoken_output:
+        return {
+            "output_type": "audio_email",
+            "email_to": email_to,
+            "email_subject": email_subject,
+        }
+
+    # 2) Courriel texte + adresse
+    if email_to and (mail_delivery_intent or recevoir_with_address) and not wants_spoken_output:
+        return {
+            "output_type": "email",
+            "email_to": email_to,
+            "email_subject": email_subject,
+        }
+
+    # 3) Audio sans livraison mail → TTS
+    if wants_spoken_output:
+        return {
+            "output_type": "audio_tts",
+            "email_to": None,
+            "email_subject": email_subject,
+        }
+
+    # 4) Affichage interface, sans demande audio
+    if wants_on_screen:
+        return {
+            "output_type": "screen",
+            "email_to": None,
+            "email_subject": email_subject,
+        }
+
+    return default
+
+
 def leaf_matches_cron_context(label: str, description: str) -> bool:
     blob = f"{label or ''} {description or ''}".strip()
     if not blob:
@@ -298,12 +399,27 @@ def _build_trigger_config_base(
     *,
     use_cron: bool,
     schedule: Optional[Dict[str, Any]],
+    output_type: str = "mindmap_child",
+    email_to: Optional[str] = None,
+    email_subject: Optional[str] = None,
 ) -> Dict[str, Any]:
+    ot = output_type if output_type in (
+        "mindmap_child",
+        "screen",
+        "email",
+        "audio_tts",
+        "audio_email",
+    ) else "mindmap_child"
     cfg: Dict[str, Any] = {
         "task_type": "agent",
         "selected_agent": str(agent_id),
-        "output_type": "mindmap_child",
+        "output_type": ot,
     }
+    if ot in ("email", "audio_email"):
+        if email_to:
+            cfg["email_to"] = email_to
+        if email_subject:
+            cfg["email_subject"] = email_subject
     if use_cron and schedule:
         cfg["cron_hour"] = schedule["cron_hour"]
         cfg["cron_minute"] = schedule["cron_minute"]
@@ -409,7 +525,8 @@ def auto_create_triggers_for_leaves(
     """
     Pour chaque feuille retenue du lot ``created_nodes``, sélectionne un agent (LLM) et crée un trigger
     (``cron`` si le texte décrit une récurrence et que la feuille correspond à un nœud « agent / veille »,
-    sinon ``manual``). ``output_type`` par défaut : ``mindmap_child``.
+    sinon ``manual``). ``output_type`` : ``mindmap_child`` par défaut, ou ``email`` / ``audio_email`` si
+    le texte utilisateur le permet (voir ``infer_output_delivery_from_text``).
 
     Si une planification est détectée mais que plusieurs feuilles existent (découpage trop fin par le modèle),
     un **seul** trigger est créé sur la feuille la plus alignée avec le texte utilisateur.
@@ -439,6 +556,15 @@ def auto_create_triggers_for_leaves(
         leaf_ids, schedule, nodes_by_id, orm_by_id, user_text
     )
 
+    delivery = infer_output_delivery_from_text(user_text)
+    out_type = delivery.get("output_type") or "mindmap_child"
+    mail_to = delivery.get("email_to")
+    mail_subj = delivery.get("email_subject")
+    if out_type in ("email", "audio_email") and not mail_to:
+        out_type = "mindmap_child"
+        mail_to = None
+        mail_subj = None
+
     created_triggers: List[Dict[str, Any]] = []
 
     for leaf_id in target_leaf_ids:
@@ -463,7 +589,14 @@ def auto_create_triggers_for_leaves(
 
             use_cron = _should_use_cron_for_leaf(schedule, target_leaf_ids, label, description)
             trigger_type = "cron" if use_cron else "manual"
-            config = _build_trigger_config_base(agent.id, use_cron=use_cron, schedule=schedule)
+            config = _build_trigger_config_base(
+                agent.id,
+                use_cron=use_cron,
+                schedule=schedule,
+                output_type=out_type,
+                email_to=mail_to,
+                email_subject=mail_subj,
+            )
 
             trigger_data = TriggerCreate(
                 node_id=leaf_id,
