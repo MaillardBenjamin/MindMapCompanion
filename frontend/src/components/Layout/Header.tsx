@@ -30,24 +30,57 @@ const Header = () => {
   const location = useLocation();
   const { isAuthenticated, logout } = useAuthStore();
 
-  const publicNavItems = [
-    { label: 'Accueil', path: '/' },
-    { label: 'Fonctionnalités', path: '/#features' },
-    { label: 'À propos', path: '/#about' },
+  type PublicNavTarget = 'home' | 'features' | 'about';
+
+  const publicNavItems: { label: string; target: PublicNavTarget }[] = [
+    { label: 'Accueil', target: 'home' },
+    { label: 'Fonctionnalités', target: 'features' },
+    { label: 'À propos', target: 'about' },
   ];
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
   };
 
-  const handleNavigation = (path: string) => {
-    if (path.includes('#')) {
-      const element = document.querySelector(path.split('/')[1]);
-      element?.scrollIntoView({ behavior: 'smooth' });
-    } else {
-      navigate(path);
+  const scrollTop = (behavior: ScrollBehavior = 'smooth') => {
+    document.getElementById('scroll-container')?.scrollTo({ top: 0, behavior });
+  };
+
+  const handleNavigation = (target: PublicNavTarget) => {
+    if (target === 'home') {
+      if (location.pathname === '/') {
+        scrollTop();
+        navigate('/', { replace: true });
+      } else {
+        navigate('/');
+      }
+      setMobileOpen(false);
+      return;
     }
+    if (target === 'features') {
+      if (location.pathname !== '/') {
+        navigate({ pathname: '/', hash: '#features' });
+      } else {
+        if (location.hash !== '#features') {
+          navigate({ pathname: '/', hash: '#features' });
+        }
+        window.setTimeout(() => {
+          document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' });
+        }, 80);
+      }
+      setMobileOpen(false);
+      return;
+    }
+    navigate('/about');
     setMobileOpen(false);
+  };
+
+  const navButtonActive = (target: PublicNavTarget) => {
+    if (target === 'about') return location.pathname === '/about';
+    if (target === 'home') {
+      return location.pathname === '/' && location.hash !== '#features';
+    }
+    return location.pathname === '/' && location.hash === '#features';
   };
 
   const handleLogout = () => {
@@ -70,7 +103,14 @@ const Header = () => {
               cursor: 'pointer',
               gap: 1.5,
             }}
-            onClick={() => navigate('/')}
+            onClick={() => {
+              if (location.pathname === '/') {
+                scrollTop();
+                navigate('/', { replace: true });
+              } else {
+                navigate('/');
+              }
+            }}
           >
             <Box
               component="img"
@@ -106,9 +146,9 @@ const Header = () => {
                 transition={{ duration: 0.3, delay: index * 0.1 }}
               >
                 <Button
-                  onClick={() => handleNavigation(item.path)}
+                  onClick={() => handleNavigation(item.target)}
                   sx={{
-                    color: location.pathname === item.path ? 'primary.main' : 'text.secondary',
+                    color: navButtonActive(item.target) ? 'primary.main' : 'text.secondary',
                     '&:hover': { color: 'primary.light', background: 'transparent' },
                   }}
                 >
@@ -181,7 +221,7 @@ const Header = () => {
         <List>
           {publicNavItems.map((item) => (
             <ListItem key={item.label} disablePadding>
-              <ListItemButton onClick={() => handleNavigation(item.path)}>
+              <ListItemButton onClick={() => handleNavigation(item.target)}>
                 <ListItemText
                   primary={item.label}
                   sx={{ color: 'text.primary' }}
@@ -190,7 +230,12 @@ const Header = () => {
             </ListItem>
           ))}
           <ListItem disablePadding>
-            <ListItemButton onClick={() => handleNavigation('/login')}>
+            <ListItemButton
+              onClick={() => {
+                navigate('/login');
+                setMobileOpen(false);
+              }}
+            >
               <ListItemText primary="Connexion" sx={{ color: 'primary.main' }} />
             </ListItemButton>
           </ListItem>

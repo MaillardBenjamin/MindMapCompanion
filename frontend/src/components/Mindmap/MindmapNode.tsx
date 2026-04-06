@@ -37,7 +37,9 @@ const MindmapNode = memo(({ data, selected }: NodeProps) => {
     : description;
 
   const getStatusIcon = () => {
-    const iconSx = { fontSize: 14, color: nodeColor };
+    // Sur la racine le fond est nodeColor : même teinte que l’icône = invisible mais place réservée → faux « vide » à gauche
+    const iconColor = isRoot ? '#0A0E17' : nodeColor;
+    const iconSx = { fontSize: 14, color: iconColor };
     switch (status) {
       case 'inbox':
         return <InboxIcon sx={iconSx} />;
@@ -80,7 +82,7 @@ const MindmapNode = memo(({ data, selected }: NodeProps) => {
         sx={{
           position: 'relative',
           minWidth: isRoot ? 140 : 100,
-          maxWidth: 180,
+          maxWidth: isRoot ? 220 : 180,
         }}
       >
         {/* Handles à gauche - pour les nœuds à droite de leur parent */}
@@ -150,16 +152,24 @@ const MindmapNode = memo(({ data, selected }: NodeProps) => {
                 )}
               </Typography>
             )}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                ...(isRoot && { justifyContent: 'center', width: '100%' }),
+              }}
+            >
               {getStatusIcon()}
               <Typography
                 variant={isRoot ? 'subtitle1' : 'body2'}
                 sx={{
                   fontWeight: isRoot ? 700 : 500,
                   color: isRoot ? '#0A0E17' : '#E8EDF5',
-                  textAlign: 'center',
+                  textAlign: isRoot ? 'left' : 'center',
                   wordBreak: 'break-word',
                   lineHeight: 1.2,
+                  ...(isRoot && { flex: '0 1 auto', minWidth: 0 }),
                 }}
               >
                 {label}

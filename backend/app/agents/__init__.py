@@ -17,6 +17,7 @@ from app.agents.base import AgentBase
 from app.agents.mindmap_organizer import MindmapOrganizerAgent
 from app.agents.mindmap_reorganizer import MindmapReorganizerAgent
 from app.agents.tts_preprocessor_agent import TTSPreprocessorAgent, tts_preprocessor_agent
+from app.agents.github_security_audit import GitHubSecurityAuditAgent, github_security_audit_agent
 
 __all__ = [
     "AgentBase",
@@ -24,4 +25,6 @@ __all__ = [
     "MindmapReorganizerAgent",
     "TTSPreprocessorAgent",
     "tts_preprocessor_agent",
+    "GitHubSecurityAuditAgent",
+    "github_security_audit_agent",
 ]

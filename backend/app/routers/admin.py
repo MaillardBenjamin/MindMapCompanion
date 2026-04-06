@@ -10,7 +10,8 @@ from app.database import get_db
 from app.models.event import Event
 from app.models.execution_log import ExecutionLog
 from app.models.user import User
-from app.crud.configurable_agent import create_agent, get_agent_by_slug
+from app.models.configurable_agent import ConfigurableAgent
+from app.crud.configurable_agent import create_agent
 from app.schemas.configurable_agent import ConfigurableAgentCreate
 from app.services.agent_config_parser import AgentConfigParser
 
@@ -94,12 +95,20 @@ async def load_agents_from_files(
                 logger.error(f"Configuration invalide pour {md_file.name}: {error}")
                 continue
             
-            # Vérifier si l'agent existe déjà pour cet utilisateur
-            existing_agent = get_agent_by_slug(db, slug, current_user.id)
+            # Même agent inactif : get_agent_by_slug() ne le voit pas (filtre is_active) et la création échoue sur l'unicité du slug
+            existing_agent = (
+                db.query(ConfigurableAgent)
+                .filter(
+                    ConfigurableAgent.slug == slug,
+                    ConfigurableAgent.user_id == current_user.id,
+                )
+                .first()
+            )
             
             if existing_agent:
                 # Mettre à jour l'agent existant avec les nouvelles valeurs
                 logger.info(f"Mise à jour de l'agent {slug} (ID: {existing_agent.id})")
+                existing_agent.is_active = True
                 existing_agent.name = parsed_config.get("name", existing_agent.name)
                 existing_agent.description = parsed_config.get("description", existing_agent.description)
                 existing_agent.persona = parsed_config.get("persona", existing_agent.persona)

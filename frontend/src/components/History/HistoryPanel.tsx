@@ -10,14 +10,12 @@ import {
   IconButton,
   Tooltip,
   Divider,
+  Button,
 } from '@mui/material';
 import {
-  PlayArrow as PlayIcon,
   Bolt as TriggerIcon,
   Settings as ActionIcon,
   AddCircle as NodeIcon,
-  Edit as EditIcon,
-  Delete as DeleteIcon,
   Event as EventIcon,
   SmartToy as AgentIcon,
   Refresh as RefreshIcon,
@@ -127,6 +125,164 @@ const getStatusColor = (status?: string | null) => {
     default:
       return '#8B95A8';
   }
+};
+
+/** Au-delà de ce nombre de caractères, la description est repliée par défaut. */
+const DESCRIPTION_COLLAPSE_AFTER = 500;
+
+type HistoryEntryCardProps = {
+  item: HistoryItem;
+};
+
+const HistoryEntryCard = ({ item }: HistoryEntryCardProps) => {
+  const [expanded, setExpanded] = useState(false);
+  const color = getTypeColor(item.type);
+  const statusColor = getStatusColor(item.status);
+  const timeAgo = formatDistanceToNow(new Date(item.created_at));
+  const desc = (item.description ?? '').trim();
+  const isLong = desc.length > DESCRIPTION_COLLAPSE_AFTER;
+  const displayDesc =
+    expanded || !isLong
+      ? desc
+      : `${desc.slice(0, DESCRIPTION_COLLAPSE_AFTER).trimEnd()}…`;
+
+  return (
+    <Card
+      sx={{
+        backgroundColor: 'rgba(18, 24, 43, 0.5)',
+        border: `1px solid ${color}30`,
+        borderRadius: '12px',
+        '&:hover': {
+          borderColor: `${color}60`,
+          backgroundColor: 'rgba(18, 24, 43, 0.7)',
+        },
+        transition: 'all 0.2s ease',
+      }}
+    >
+      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+          <Box
+            sx={{
+              color,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: 32,
+              height: 32,
+              borderRadius: '8px',
+              backgroundColor: `${color}15`,
+            }}
+          >
+            {getTypeIcon(item.type)}
+          </Box>
+
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  color: 'text.primary',
+                  flex: 1,
+                }}
+              >
+                {item.title}
+              </Typography>
+              {item.status && (
+                <Chip
+                  label={item.status}
+                  size="small"
+                  sx={{
+                    backgroundColor: `${statusColor}20`,
+                    color: statusColor,
+                    fontSize: '0.65rem',
+                    height: 20,
+                  }}
+                />
+              )}
+            </Box>
+
+            {desc ? (
+              <Box sx={{ mb: isLong ? 0 : 0.5 }}>
+                <Typography
+                  variant="caption"
+                  component="div"
+                  sx={{
+                    color: 'text.secondary',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {displayDesc}
+                </Typography>
+                {isLong && (
+                  <Button
+                    type="button"
+                    variant="text"
+                    size="small"
+                    aria-expanded={expanded}
+                    onClick={() => setExpanded((e) => !e)}
+                    sx={{
+                      mt: 0.5,
+                      p: 0,
+                      minWidth: 0,
+                      fontSize: '0.75rem',
+                      color: '#00D9FF',
+                      textTransform: 'none',
+                      '&:hover': {
+                        backgroundColor: 'rgba(0, 217, 255, 0.08)',
+                      },
+                    }}
+                  >
+                    {expanded ? 'Voir moins' : 'Voir plus'}
+                  </Button>
+                )}
+              </Box>
+            ) : null}
+
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 1 }}>
+              <Typography
+                variant="caption"
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: '0.7rem',
+                }}
+              >
+                {timeAgo}
+              </Typography>
+              {item.node_label && (
+                <>
+                  <Divider orientation="vertical" flexItem sx={{ height: 12 }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: '#00D9FF',
+                      fontSize: '0.7rem',
+                    }}
+                  >
+                    Nœud: {item.node_label}
+                  </Typography>
+                </>
+              )}
+              {item.agent_name && (
+                <>
+                  <Divider orientation="vertical" flexItem sx={{ height: 12 }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: '#FF6B9D',
+                      fontSize: '0.7rem',
+                    }}
+                  >
+                    Agent: {item.agent_name}
+                  </Typography>
+                </>
+              )}
+            </Box>
+          </Box>
+        </Box>
+      </CardContent>
+    </Card>
+  );
 };
 
 const HistoryPanel = () => {
@@ -247,135 +403,16 @@ const HistoryPanel = () => {
         ) : (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
             <AnimatePresence>
-              {items.map((item) => {
-                const color = getTypeColor(item.type);
-                const statusColor = getStatusColor(item.status);
-                const timeAgo = formatDistanceToNow(new Date(item.created_at));
-
-                return (
-                  <motion.div
-                    key={item.id}
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
-                  >
-                    <Card
-                      sx={{
-                        backgroundColor: 'rgba(18, 24, 43, 0.5)',
-                        border: `1px solid ${color}30`,
-                        borderRadius: '12px',
-                        '&:hover': {
-                          borderColor: `${color}60`,
-                          backgroundColor: 'rgba(18, 24, 43, 0.7)',
-                        },
-                        transition: 'all 0.2s ease',
-                      }}
-                    >
-                      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
-                          {/* Icon */}
-                          <Box
-                            sx={{
-                              color,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              minWidth: 32,
-                              height: 32,
-                              borderRadius: '8px',
-                              backgroundColor: `${color}15`,
-                            }}
-                          >
-                            {getTypeIcon(item.type)}
-                          </Box>
-
-                          {/* Content */}
-                          <Box sx={{ flex: 1, minWidth: 0 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                              <Typography
-                                variant="body2"
-                                sx={{
-                                  fontWeight: 600,
-                                  color: 'text.primary',
-                                  flex: 1,
-                                }}
-                              >
-                                {item.title}
-                              </Typography>
-                              {item.status && (
-                                <Chip
-                                  label={item.status}
-                                  size="small"
-                                  sx={{
-                                    backgroundColor: `${statusColor}20`,
-                                    color: statusColor,
-                                    fontSize: '0.65rem',
-                                    height: 20,
-                                  }}
-                                />
-                              )}
-                            </Box>
-
-                            {item.description && (
-                              <Typography
-                                variant="caption"
-                                sx={{
-                                  color: 'text.secondary',
-                                  display: 'block',
-                                  mb: 0.5,
-                                  wordBreak: 'break-word',
-                                }}
-                              >
-                                {item.description}
-                              </Typography>
-                            )}
-
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 1 }}>
-                              <Typography
-                                variant="caption"
-                                sx={{
-                                  color: 'text.secondary',
-                                  fontSize: '0.7rem',
-                                }}
-                              >
-                                {timeAgo}
-                              </Typography>
-                              {item.node_label && (
-                                <>
-                                  <Divider orientation="vertical" flexItem sx={{ height: 12 }} />
-                                  <Typography
-                                    variant="caption"
-                                    sx={{
-                                      color: '#00D9FF',
-                                      fontSize: '0.7rem',
-                                    }}
-                                  >
-                                    Nœud: {item.node_label}
-                                  </Typography>
-                                </>
-                              )}
-                              {item.agent_name && (
-                                <>
-                                  <Divider orientation="vertical" flexItem sx={{ height: 12 }} />
-                                  <Typography
-                                    variant="caption"
-                                    sx={{
-                                      color: '#FF6B9D',
-                                      fontSize: '0.7rem',
-                                    }}
-                                  >
-                                    Agent: {item.agent_name}
-                                  </Typography>
-                                </>
-                              )}
-                            </Box>
-                          </Box>
-                        </Box>
-                      </CardContent>
-                    </Card>
-                  </motion.div>
-                );
-              })}
+              {items.map((item) => (
+                <motion.div
+                  key={item.id}
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                >
+                  <HistoryEntryCard item={item} />
+                </motion.div>
+              ))}
             </AnimatePresence>
           </Box>
         )}

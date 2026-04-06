@@ -9,18 +9,23 @@ interface LayoutProps {
 
 const Layout = ({ showFooter = true }: LayoutProps) => {
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <Header />
       <Box
-        component="main"
+        id="scroll-container"
         sx={{
           flexGrow: 1,
-          pt: { xs: 8, md: 10 },
+          overflow: 'auto',
         }}
       >
-        <Outlet />
+        <Box
+          component="main"
+          sx={{ pt: { xs: 8, md: 10 } }}
+        >
+          <Outlet />
+        </Box>
+        {showFooter && <Footer />}
       </Box>
-      {showFooter && <Footer />}
     </Box>
   );
 };

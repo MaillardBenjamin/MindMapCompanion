@@ -37,6 +37,12 @@ class Settings(BaseSettings):
 
     # AI Agents configuration
     skip_agent_llm: bool = Field(default=False, alias="SKIP_AGENT_LLM")
+    # Supervision site : régénérations LLM du plan après échec Playwright (0 = désactivé)
+    site_health_max_repairs: int = Field(default=2, alias="SITE_HEALTH_MAX_REPAIRS")
+    # Capture PNG à l’échec d’une étape (pour réparation vision / logs)
+    site_health_failure_screenshot: bool = Field(default=True, alias="SITE_HEALTH_FAILURE_SCREENSHOT")
+    # Joindre la capture au LLM de réparation (désactiver si modèle sans vision, ex. Ollama texte seul)
+    site_health_repair_with_screenshot: bool = Field(default=True, alias="SITE_HEALTH_REPAIR_WITH_SCREENSHOT")
     agno_model: str = Field(default="gpt-5-mini", alias="AGNO_MODEL")
     agno_api_key: str = Field(default="", alias="AGNO_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
@@ -51,6 +57,9 @@ class Settings(BaseSettings):
     search_provider: str = Field(default="google", alias="SEARCH_PROVIDER")
 
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
+
+    # GitHub (lecture API : audit commit, dépôts privés)
+    github_token: str = Field(default="", alias="GITHUB_TOKEN")
 
 
 @lru_cache

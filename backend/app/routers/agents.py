@@ -17,6 +17,7 @@ from app.models.user import User
 from app.crud.mindmap import get_mindmap
 from app.agents.mindmap_organizer import mindmap_organizer
 from app.agents.mindmap_reorganizer import mindmap_reorganizer
+from app.agents.github_security_audit import github_security_audit_agent
 
 
 router = APIRouter(prefix="/agents", tags=["Agents IA"])
@@ -36,6 +37,15 @@ class ReorganizeRequest(BaseModel):
     mindmap_id: int
     auto_apply: bool = True
     focus_area: Optional[str] = None
+
+
+class GitHubSecurityAuditRequest(BaseModel):
+    """Requête pour auditer le dernier commit d'un dépôt GitHub"""
+
+    owner: str
+    repo: str
+    branch: str = "main"
+    extra_context: Optional[str] = None
 
 
 class AgentListItem(BaseModel):
@@ -61,6 +71,11 @@ async def list_agents():
             name=mindmap_reorganizer.name,
             description=mindmap_reorganizer.description,
             endpoint="/api/agents/mindmap/reorganize",
+        ),
+        AgentListItem(
+            name=github_security_audit_agent.name,
+            description=github_security_audit_agent.description,
+            endpoint="/api/agents/github/security-audit",
         ),
     ]
 
@@ -169,6 +184,43 @@ async def reorganize_mindmap(
             detail=result.error or "Erreur lors de l'exécution de l'agent"
         )
     
+    return {
+        "success": result.success,
+        "message": result.message,
+        "data": result.data,
+    }
+
+
+@router.post("/github/security-audit")
+async def github_security_audit(
+    request: GitHubSecurityAuditRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Audite le code modifié par le **dernier commit** sur une branche GitHub (API lecture seule).
+
+    Utilise l'outil `fetch_last_commit_diff_for_security_audit` puis un modèle LLM pour l'analyse AppSec.
+    Configurez `GITHUB_TOKEN` sur le serveur pour les dépôts privés ou un meilleur quota API.
+    """
+    if not request.owner.strip() or not request.repo.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="owner et repo sont obligatoires",
+        )
+
+    result = await github_security_audit_agent.execute(
+        owner=request.owner.strip(),
+        repo=request.repo.strip(),
+        branch=(request.branch or "main").strip(),
+        extra_context=request.extra_context,
+    )
+
+    if not result.success:
+        raise HTTPException(
+            status_code=500,
+            detail=result.error or "Erreur lors de l'audit de sécurité",
+        )
+
     return {
         "success": result.success,
         "message": result.message,

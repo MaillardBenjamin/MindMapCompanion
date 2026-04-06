@@ -3,6 +3,7 @@ import { ThemeProvider, CssBaseline } from '@mui/material';
 import theme from './theme/theme';
 import Layout from './components/Layout/Layout';
 import Landing from './pages/Landing/Landing';
+import About from './pages/About/About';
 import Login from './pages/Login/Login';
 import Dashboard from './pages/Dashboard/Dashboard';
 import AuthProvider from './components/Auth/AuthProvider';
@@ -41,6 +42,7 @@ function App() {
             {/* Public Routes with Layout */}
             <Route element={<Layout />}>
               <Route path="/" element={<Landing />} />
+              <Route path="/about" element={<About />} />
             </Route>
 
             {/* Login Page (no footer) */}

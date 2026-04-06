@@ -10,18 +10,51 @@ import {
 } from '@mui/material';
 import {
   AutoAwesome as AutoAwesomeIcon,
-  Psychology as PsychologyIcon,
   Speed as SpeedIcon,
   Bolt as BoltIcon,
   AccountTree as AccountTreeIcon,
   SmartToy as SmartToyIcon,
   ArrowForward as ArrowForwardIcon,
+  Psychology as PsychologyIcon,
+  GppGood as GppGoodIcon,
 } from '@mui/icons-material';
+import { useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
+import HeroMindmapIllustration from './HeroMindmapIllustration';
 
 const Landing = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    const sc = document.getElementById('scroll-container');
+    if (location.hash === '#features') {
+      const t = window.setTimeout(() => {
+        document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' });
+      }, 80);
+      return () => window.clearTimeout(t);
+    }
+    sc?.scrollTo({ top: 0, behavior: 'instant' });
+  }, [location.hash, location.key]);
+
+  const heroHighlights = [
+    {
+      icon: <PsychologyIcon sx={{ fontSize: 22 }} />,
+      title: 'Intelligent',
+      description: "L'IA structure, relie et enrichit vos idées",
+    },
+    {
+      icon: <BoltIcon sx={{ fontSize: 22 }} />,
+      title: 'Opérationnel',
+      description: 'Chaque nœud devient une action déclenchable',
+    },
+    {
+      icon: <GppGoodIcon sx={{ fontSize: 22 }} />,
+      title: 'Maîtrisé',
+      description: 'Vos données restent sous votre contrôle',
+    },
+  ];
 
   const features = [
     {
@@ -67,6 +100,7 @@ const Landing = () => {
     <Box sx={{ overflow: 'hidden' }}>
       {/* Hero Section */}
       <Box
+        id="hero"
         sx={{
           minHeight: '100vh',
           display: 'flex',
@@ -103,14 +137,35 @@ const Landing = () => {
           }}
         />
 
-        <Container maxWidth="lg">
-          <Grid container spacing={6} alignItems="center">
-            <Grid size={{ xs: 12, lg: 6 }}>
-              <motion.div
-                initial={{ opacity: 0, x: -50 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.7 }}
-              >
+        <Container maxWidth="lg" sx={{ position: 'relative' }}>
+          {/* Image — positionnée en absolu sur desktop pour couvrir toute la hauteur */}
+          <Box
+            sx={{
+              display: { xs: 'none', lg: 'block' },
+              position: 'absolute',
+              top: '-5%',
+              bottom: '-5%',
+              right: 0,
+              width: '55%',
+              pointerEvents: 'none',
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.85 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.7, delay: 0.2 }}
+              style={{ width: '100%', height: '100%' }}
+            >
+              <HeroMindmapIllustration />
+            </motion.div>
+          </Box>
+
+          <Box sx={{ maxWidth: { lg: '45%' }, position: 'relative', zIndex: 1 }}>
+            <motion.div
+              initial={{ opacity: 0, x: -50 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.7 }}
+            >
                 <Chip
                   icon={<AutoAwesomeIcon sx={{ fontSize: 16, color: '#00D9FF !important' }} />}
                   label="Propulsé par l'IA"
@@ -158,7 +213,7 @@ const Landing = () => {
                     onClick={() => navigate('/login')}
                     sx={{ px: 4, py: 1.5 }}
                   >
-                    Démarrer gratuitement
+                    Démarrer
                   </Button>
                   <Button
                     variant="outlined"
@@ -169,128 +224,53 @@ const Landing = () => {
                     Découvrir
                   </Button>
                 </Box>
-              </motion.div>
-            </Grid>
-
-            <Grid size={{ xs: 12, lg: 6 }}>
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.7, delay: 0.2 }}
-              >
-                <Box
-                  sx={{
-                    position: 'relative',
-                    height: { xs: 300, md: 500 },
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  {/* Animated Mindmap Preview */}
-                  <Box
-                    sx={{
-                      position: 'relative',
-                      width: '100%',
-                      height: '100%',
-                    }}
-                  >
-                    {/* Central Node */}
-                    <motion.div
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ delay: 0.5, type: 'spring', stiffness: 200 }}
-                      style={{
-                        position: 'absolute',
-                        top: '50%',
-                        left: '50%',
-                        transform: 'translate(-50%, -50%)',
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          width: 120,
-                          height: 120,
-                          borderRadius: '50%',
-                          backgroundColor: '#00D9FF',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          boxShadow: '0 0 60px rgba(0, 217, 255, 0.5)',
-                        }}
-                      >
-                        <PsychologyIcon sx={{ fontSize: 48, color: '#0A0E17' }} />
-                      </Box>
-                    </motion.div>
-
-                    {/* Orbiting Nodes */}
-                    {[0, 60, 120, 180, 240, 300].map((angle, index) => (
-                      <motion.div
-                        key={index}
-                        initial={{ opacity: 0, scale: 0 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ delay: 0.7 + index * 0.1, type: 'spring' }}
-                        style={{
-                          position: 'absolute',
-                          top: `calc(50% + ${Math.sin((angle * Math.PI) / 180) * 150}px)`,
-                          left: `calc(50% + ${Math.cos((angle * Math.PI) / 180) * 150}px)`,
-                          transform: 'translate(-50%, -50%)',
-                        }}
-                      >
-                        <motion.div
-                          animate={{ y: [0, -10, 0] }}
-                          transition={{
-                            duration: 2,
-                            repeat: Infinity,
-                            delay: index * 0.2,
+                <Grid container spacing={2} sx={{ mt: { xs: 3, sm: 4 }, maxWidth: 560 }}>
+                  {heroHighlights.map((item) => (
+                    <Grid key={item.title} size={{ xs: 12, sm: 4 }}>
+                      <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
+                        <Box
+                          sx={{
+                            flexShrink: 0,
+                            width: 40,
+                            height: 40,
+                            borderRadius: '50%',
+                            backgroundColor: 'rgba(0, 217, 255, 0.12)',
+                            border: '1px solid rgba(0, 217, 255, 0.25)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#00D9FF',
                           }}
                         >
-                          <Box
-                            sx={{
-                              width: 50,
-                              height: 50,
-                              borderRadius: '12px',
-                              background: `rgba(${index % 2 === 0 ? '0, 217, 255' : '255, 107, 157'}, 0.2)`,
-                              border: `2px solid rgba(${index % 2 === 0 ? '0, 217, 255' : '255, 107, 157'}, 0.5)`,
-                              backdropFilter: 'blur(10px)',
-                            }}
-                          />
-                        </motion.div>
-                      </motion.div>
-                    ))}
-
-                    {/* Connection Lines */}
-                    <svg
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: '100%',
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      {[0, 60, 120, 180, 240, 300].map((angle, index) => (
-                        <motion.line
-                          key={index}
-                          x1="50%"
-                          y1="50%"
-                          x2={`calc(50% + ${Math.cos((angle * Math.PI) / 180) * 150}px)`}
-                          y2={`calc(50% + ${Math.sin((angle * Math.PI) / 180) * 150}px)`}
-                          stroke={index % 2 === 0 ? '#00D9FF' : '#FF6B9D'}
-                          strokeWidth="2"
-                          strokeOpacity="0.3"
-                          initial={{ pathLength: 0 }}
-                          animate={{ pathLength: 1 }}
-                          transition={{ delay: 0.6, duration: 0.5 }}
-                        />
-                      ))}
-                    </svg>
-                  </Box>
-                </Box>
+                          {item.icon}
+                        </Box>
+                        <Box>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.3, mb: 0.25 }}>
+                            {item.title}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem', lineHeight: 1.5 }}>
+                            {item.description}
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </Grid>
+                  ))}
+                </Grid>
               </motion.div>
-            </Grid>
-          </Grid>
+            </Box>
+
+          {/* Image mobile / tablette (flux normal) */}
+          <Box sx={{ display: { xs: 'block', lg: 'none' }, mt: 4 }}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.85 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.7, delay: 0.2 }}
+            >
+              <Box sx={{ height: { xs: 320, sm: 400, md: 480 } }}>
+                <HeroMindmapIllustration />
+              </Box>
+            </motion.div>
+          </Box>
         </Container>
       </Box>
 
@@ -405,8 +385,8 @@ const Landing = () => {
                 color="text.secondary"
                 sx={{ mb: 4, maxWidth: 500, mx: 'auto' }}
               >
-                Rejoignez des milliers d'utilisateurs qui ont déjà transformé 
-                leur façon de travailler avec MindMapCompanion.
+                Projet open source sous licence MIT : installez-le, essayez-le et
+                adaptez-le à votre façon d&apos;organiser vos idées et vos actions.
               </Typography>
               <Button
                 variant="contained"

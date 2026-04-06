@@ -393,7 +393,60 @@ class ConfigurableAgentService:
                     logger.error(f"[ConfigurableAgent] Installation requise: pip install playwright")
                 except Exception as e:
                     logger.error(f"[ConfigurableAgent] ❌ Erreur lors de la configuration de JobScrapingTools: {e}", exc_info=True)
-            
+
+            # Audit de sécurité GitHub (dernier commit / branche)
+            github_audit_tools = [
+                "fetch_last_commit_diff_for_security_audit",
+                "github_security_audit",
+                "github_last_commit_audit",
+            ]
+            has_github_audit = any(tool in github_audit_tools for tool in normalized_tools)
+            if has_github_audit:
+                try:
+                    from app.tools.github_security_audit_tools import GitHubSecurityAuditTools
+
+                    agno_tools.append(GitHubSecurityAuditTools())
+                    logger.info("[ConfigurableAgent] ✅ GitHubSecurityAuditTools configuré")
+                    logger.info(
+                        "[ConfigurableAgent]   - fetch_last_commit_diff_for_security_audit: activé "
+                        "(GITHUB_TOKEN optionnel pour dépôts privés)"
+                    )
+                except ImportError as e:
+                    logger.error(f"[ConfigurableAgent] ❌ GitHubSecurityAuditTools non disponible: {e}")
+                except Exception as e:
+                    logger.error(
+                        f"[ConfigurableAgent] ❌ Erreur lors de la configuration de GitHubSecurityAuditTools: {e}",
+                        exc_info=True,
+                    )
+
+            # Vérification site (HTTP + Playwright piloté par instructions NL → plan JSON via LLM + email si KO)
+            site_health_tool_names = [
+                "verify_site_health",
+                "check_site_health",
+                "site_health_playwright",
+            ]
+            has_site_health = any(tool in site_health_tool_names for tool in normalized_tools)
+            if has_site_health:
+                try:
+                    from app.tools.site_health_check_tools import SiteHealthCheckTools
+
+                    parsed_sh = self.parser.parse_markdown(config.markdown_config) if config.markdown_config else {}
+                    site_health_cfg = {
+                        "alert_email": parsed_sh.get("alert_email"),
+                        "site_check_timeout_ms": parsed_sh.get("site_check_timeout_ms", 30_000),
+                        "site_check_headless": parsed_sh.get("site_check_headless", True),
+                        "site_check_http_timeout_sec": parsed_sh.get("site_check_http_timeout_sec", 15),
+                    }
+                    agno_tools.append(SiteHealthCheckTools(agent_config=site_health_cfg))
+                    logger.info("[ConfigurableAgent] ✅ SiteHealthCheckTools configuré (alert_email=%s)", site_health_cfg.get("alert_email") or "non défini")
+                except ImportError as e:
+                    logger.error(f"[ConfigurableAgent] ❌ SiteHealthCheckTools non disponible: {e}")
+                except Exception as e:
+                    logger.error(
+                        f"[ConfigurableAgent] ❌ Erreur lors de la configuration de SiteHealthCheckTools: {e}",
+                        exc_info=True,
+                    )
+
             # Ajouter des informations sur les outils disponibles dans les instructions
             if agno_tools:
                 tools_list = ", ".join(normalized_tools)
@@ -463,6 +516,28 @@ class ConfigurableAgentService:
                         "4. Fournis un plan d'exécution clair avec les ordres, le cash restant, les coûts et les risques principaux\n"
                         "5. Si `portfolio_tracking` est présent, mentionne l'emplacement du fichier d'état et le statut de sauvegarde\n"
                         "\nLa simulation modélise des frais estimés, mais ignore la fiscalité et la liquidité réelle."
+                    )
+
+                if has_github_audit:
+                    instructions_parts.append(
+                        "\n🔧 Outil d'audit GitHub (dernier commit) disponible et ACTIF:\n"
+                        "- fetch_last_commit_diff_for_security_audit(owner, repo, branch='main') : "
+                        "récupère le dernier commit sur la branche et les diffs des fichiers.\n"
+                        "Pour un dépôt privé, le serveur doit exposer GITHUB_TOKEN.\n"
+                        "INSTRUCTIONS: appelle cet outil en premier avec les paramètres fournis par l'utilisateur, "
+                        "puis rédige l'audit de sécurité du diff en français (findings, sévérités, recommandations)."
+                    )
+
+                if has_site_health:
+                    instructions_parts.append(
+                        "\n🔧 Outil de supervision de site (HTTP + Playwright) disponible et ACTIF:\n"
+                        "- verify_site_health(url, instructions, alert_email_override optionnel, steps_json optionnel, show_browser optionnel)\n"
+                        "  · show_browser=true oui ouvre une fenêtre Chromium pour suivre le scénario (local avec écran) ; "
+                        "sur serveur sans DISPLAY rester headless (défaut ou false).\n"
+                        "  · Contrôle HTTP · Plan Playwright via l'IA · email d'alerte si échec.\n"
+                        "Configure alert_email et site_check_headless (frontmatter YAML) ; SMTP = IMAP_HOST / IMAP_USER / IMAP_PASSWORD.\n"
+                        "INSTRUCTIONS: appelle verify_site_health avec l'URL et les manipulations demandées ; "
+                        "passe show_browser si l'utilisateur veut voir le navigateur."
                     )
             else:
                 # Si aucun outil n'a pu être chargé, mentionner dans les instructions

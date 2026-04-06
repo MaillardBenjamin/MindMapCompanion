@@ -31,11 +31,17 @@ export default function AgentsList() {
   const [error, setError] = useState<string | null>(null);
   const [executing, setExecuting] = useState<Record<number, boolean>>({});
   const [loadingFromFiles, setLoadingFromFiles] = useState(false);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" }>({
+  const [snackbar, setSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: "success" | "error" | "warning";
+  }>({
     open: false,
     message: "",
     severity: "success",
   });
+  /** Détails du dernier « Charger depuis fichiers » (erreurs visibles tant que l'utilisateur ne ferme pas) */
+  const [loadFromFilesReport, setLoadFromFilesReport] = useState<{ summary: string; errors: string[] } | null>(null);
   const [executeDialog, setExecuteDialog] = useState<{ open: boolean; agent: any | null }>({
     open: false,
     agent: null,
@@ -151,20 +157,26 @@ export default function AgentsList() {
       
       let message = `${result.loaded} agent(s) chargé(s) depuis les fichiers`;
       if (result.errors && result.errors.length > 0) {
-        message += `\nErreurs: ${result.errors.join(', ')}`;
         console.error('[AgentsList] Erreurs lors du chargement:', result.errors);
       }
       if (result.agents && result.agents.length > 0) {
         console.log('[AgentsList] Agents chargés:', result.agents);
-        const created = result.agents.filter(a => a.status === 'créé').length;
-        const existing = result.agents.filter(a => a.status === 'existant').length;
-        message = `${created} agent(s) créé(s), ${existing} existant(s)`;
+        const created = result.agents.filter((a: { status?: string }) => a.status === "créé").length;
+        const updated = result.agents.filter((a: { status?: string }) => a.status === "mis à jour").length;
+        message = `${created} créé(s), ${updated} mis à jour`;
       }
-      
+
+      const errs = Array.isArray(result.errors) ? result.errors : [];
+      if (errs.length > 0) {
+        setLoadFromFilesReport({ summary: message, errors: errs });
+      } else {
+        setLoadFromFilesReport(null);
+      }
+
       setSnackbar({
         open: true,
-        message: message,
-        severity: result.loaded > 0 ? "success" : "warning",
+        message: errs.length > 0 ? `${message} — détail ci-dessous` : message,
+        severity: result.loaded > 0 ? "success" : errs.length > 0 ? "error" : "warning",
       });
       // Recharger la liste des agents
       await loadAgents();
@@ -202,6 +214,24 @@ export default function AgentsList() {
   if (agents.length === 0) {
     return (
       <Box sx={{ p: 4, textAlign: "center" }}>
+        {loadFromFilesReport && loadFromFilesReport.errors.length > 0 && (
+          <Alert
+            severity="error"
+            onClose={() => setLoadFromFilesReport(null)}
+            sx={{ mb: 2, textAlign: "left", maxWidth: 720, mx: "auto" }}
+          >
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              {loadFromFilesReport.summary}
+            </Typography>
+            <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+              {loadFromFilesReport.errors.map((e, i) => (
+                <Typography key={i} component="li" variant="body2">
+                  {e}
+                </Typography>
+              ))}
+            </Box>
+          </Alert>
+        )}
         <Typography variant="h6" sx={{ mb: 2 }}>
           Aucun agent configuré
         </Typography>
@@ -235,6 +265,27 @@ export default function AgentsList() {
 
   return (
     <Box sx={{ p: 2 }}>
+      {loadFromFilesReport && loadFromFilesReport.errors.length > 0 && (
+        <Alert
+          severity="warning"
+          onClose={() => setLoadFromFilesReport(null)}
+          sx={{ mb: 2 }}
+        >
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            {loadFromFilesReport.summary}
+          </Typography>
+          <Typography variant="caption" display="block" sx={{ mb: 1 }}>
+            Certaines fiches .md n&apos;ont pas pu être importées :
+          </Typography>
+          <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+            {loadFromFilesReport.errors.map((e, i) => (
+              <Typography key={i} component="li" variant="body2">
+                {e}
+              </Typography>
+            ))}
+          </Box>
+        </Alert>
+      )}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
         <Typography variant="h6">Agents configurables</Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
